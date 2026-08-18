@@ -31,6 +31,10 @@ def _float(name):
     return ParameterValue(LaunchConfiguration(name), value_type=float)
 
 
+def _int(name):
+    return ParameterValue(LaunchConfiguration(name), value_type=int)
+
+
 def generate_launch_description():
     args = [
         # 실차/시뮬레이터는 보통 /camera/image_raw, usb_cam 연습 환경은 /image_raw.
@@ -51,6 +55,22 @@ def generate_launch_description():
 
         # HSV 튜닝 중에는 켜두면 훨씬 빠르다. 기록 측정 시에는 꺼서 부하를 줄인다.
         DeclareLaunchArgument('publish_debug', default_value='false'),
+
+        # --- 신호등 검출 튜닝 ---
+        # 기본값은 placeholder다. 검출이 안 되면 debug_probe:=true 로 실제 H/S/V 를
+        # 로그에 찍어보고 그 값으로 아래를 채우면 된다.
+        DeclareLaunchArgument('debug_probe', default_value='false'),
+        # 신호등이 화면에서 차지하는 세로 구간. 1.0 이면 화면 전체를 본다.
+        DeclareLaunchArgument('tl_roi_top_frac', default_value='0.0'),
+        DeclareLaunchArgument('tl_roi_bottom_frac', default_value='0.55'),
+        # LED 는 가운데가 하얗게 떠서 채도가 낮게 나오는 일이 잦다.
+        DeclareLaunchArgument('tl_sat_min', default_value='120'),
+        DeclareLaunchArgument('tl_val_min', default_value='120'),
+        DeclareLaunchArgument('tl_min_blob_px', default_value='60'),
+        DeclareLaunchArgument('tl_green_h_min', default_value='40'),
+        DeclareLaunchArgument('tl_green_h_max', default_value='90'),
+        DeclareLaunchArgument('tl_red_h_lo_max', default_value='10'),
+        DeclareLaunchArgument('tl_red_h_hi_min', default_value='170'),
     ]
 
     image_topic = LaunchConfiguration('image_topic')
@@ -66,7 +86,19 @@ def generate_launch_description():
     traffic_light = Node(
         package=PKG, executable='traffic_light_node', name='traffic_light_node',
         output='screen',
-        parameters=[{'publish_debug': _bool('publish_debug')}],
+        parameters=[{
+            'publish_debug': _bool('publish_debug'),
+            'debug_probe': _bool('debug_probe'),
+            'roi_top_frac': _float('tl_roi_top_frac'),
+            'roi_bottom_frac': _float('tl_roi_bottom_frac'),
+            'sat_min': _int('tl_sat_min'),
+            'val_min': _int('tl_val_min'),
+            'min_blob_px': _int('tl_min_blob_px'),
+            'green_h_min': _int('tl_green_h_min'),
+            'green_h_max': _int('tl_green_h_max'),
+            'red_h_lo_max': _int('tl_red_h_lo_max'),
+            'red_h_hi_min': _int('tl_red_h_hi_min'),
+        }],
         remappings=[('image_raw', image_topic)],
     )
 

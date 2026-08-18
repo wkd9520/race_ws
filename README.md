@@ -204,6 +204,70 @@ ros2 topic echo /race/state
 ros2 topic echo /lane/current_lane       # 계속 -1 이면 노란색 HSV 가 안 맞는 것
 ```
 
+### 차가 출발하지 않을 때
+
+`/race/state` 가 `WAIT_GREEN` 에서 안 넘어가면 신호등을 못 본 것이다.
+원인을 두 줄로 가른다:
+
+```bash
+ros2 topic echo /traffic/valid
+ros2 topic echo /traffic/light_state
+```
+
+| valid | light_state | 원인 |
+|---|---|---|
+| `false` | — | 카메라가 안 들어옴. `image_topic` 확인 |
+| `true` | `NONE` | 색 검출 실패. 아래 probe 로 실측값 확인 |
+| `true` | `RED` | 초록을 빨강으로 오인 |
+
+### 신호등 HSV 실측 (probe)
+
+임계값을 눈대중으로 돌리지 말고, 화면에 실제로 무슨 색이 보이는지 찍어본다:
+
+```bash
+ros2 launch physicar_race race_launch.py debug_probe:=true
+```
+
+1초에 한 번 이런 로그가 나온다:
+
+```
+[probe] 밝은 영역 (현재 기준: ROI y 0.00~0.55, sat_min=120, val_min=120, green H 40~90, min_blob_px=60)
+  area=4900   H=60  S=75  V=255  위치 x=0.52 y=0.20
+```
+
+읽는 법 — 현재 기준과 실측값을 비교하면 원인이 바로 나온다:
+
+| 증상 | 원인 | 조치 |
+|---|---|---|
+| `y` 가 ROI 범위 밖 | 신호등이 안 보이는 영역에 있음 | `tl_roi_bottom_frac:=1.0` |
+| `S` 가 `sat_min` 미만 | LED 가운데가 하얗게 떠서 채도가 낮음 | `tl_sat_min:=60` |
+| `V` 가 `val_min` 미만 | 화면이 어두움 | `tl_val_min:=80` |
+| `H` 가 40~90 밖 | 초록 색상 범위가 안 맞음 | `tl_green_h_min/max` 조정 |
+| `area` 가 `min_blob_px` 미만 | 신호등이 너무 작게 잡힘 | `tl_min_blob_px:=20` |
+
+위 예시(`S=75` < `sat_min=120`)면 이렇게 하면 잡힌다:
+
+```bash
+ros2 launch physicar_race race_launch.py tl_sat_min:=60
+```
+
+값을 찾았으면 `deploy/myapp.sh` 의 `LAUNCH_ARGS` 에 넣어 고정한다.
+
+**주의**: 파라미터는 노드 생성 때 한 번만 읽는다. `ros2 param set` 으로 바꿔도
+안 먹으니 반드시 실행할 때 넘길 것.
+
+### 일단 주행부터 보고 싶으면
+
+```bash
+ros2 launch physicar_race race_launch.py require_green:=false
+```
+
+이미 띄운 상태면:
+
+```bash
+ros2 topic pub --once /race/start std_msgs/msg/Bool "{data: true}"
+```
+
 ## 아직 안 만든 것
 
 - **결승선 감지 없음** — 완주 판정/정지가 없다.

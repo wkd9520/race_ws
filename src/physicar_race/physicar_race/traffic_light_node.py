@@ -18,6 +18,8 @@
 주의: HSV 기본값은 placeholder다. 실제 신호등 조명/노출에서 재확인할 것.
 """
 
+import time
+
 import cv2
 import numpy as np
 import rclpy
@@ -55,6 +57,15 @@ class TrafficLightNode(Node):
 
         self.declare_parameter('publish_debug', False)
 
+        # 색 검출이 실패할 때 '실제로 무슨 색이 보이는가'를 찍어주는 진단 모드.
+        # 임계값을 눈대중으로 돌리는 대신, 화면에서 밝은 덩어리들의 실측 H/S/V 와
+        # 위치를 로그로 뽑아 그 값을 그대로 파라미터에 넣으면 된다.
+        # ROI 밖에 있어서 못 보는 경우까지 잡으려고 ROI 가 아닌 전체 화면을 훑는다.
+        self.declare_parameter('debug_probe', False)
+        self.declare_parameter('probe_v_min', 120)     # 이 명도 이상만 후보로
+        self.declare_parameter('probe_period_s', 1.0)  # 로그 도배 방지
+        self.declare_parameter('probe_top_n', 4)
+
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
         self.roi_bottom_frac = float(p('roi_bottom_frac').value)
@@ -66,6 +77,11 @@ class TrafficLightNode(Node):
         self.val_min = int(p('val_min').value)
         self.min_blob_px = int(p('min_blob_px').value)
         self.publish_debug = bool(p('publish_debug').value)
+        self.debug_probe = bool(p('debug_probe').value)
+        self.probe_v_min = int(p('probe_v_min').value)
+        self.probe_period_s = float(p('probe_period_s').value)
+        self.probe_top_n = int(p('probe_top_n').value)
+        self._probe_stamp = 0.0
 
         self.bridge = CvBridge()
 
@@ -89,6 +105,55 @@ class TrafficLightNode(Node):
         # 0번은 배경
         return int(stats[1:, cv2.CC_STAT_AREA].max())
 
+    def _probe(self, bgr):
+        """화면에서 밝은 덩어리들의 실측 H/S/V 와 위치를 로그로 뽑는다.
+
+        검출이 안 될 때 원인은 대개 셋 중 하나인데, 이 로그 한 번이면 갈린다:
+          - 신호등이 ROI 밖에 있다        -> y 값이 roi_top/bottom_frac 범위 밖
+          - 채도/명도 기준이 너무 빡세다  -> S 나 V 가 sat_min/val_min 미만
+          - 색상(H) 범위가 안 맞다        -> H 가 green_h_min~max 밖
+        """
+        now = time.time()
+        if (now - self._probe_stamp) < self.probe_period_s:
+            return
+        self._probe_stamp = now
+
+        h, w = bgr.shape[:2]
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        lit = cv2.inRange(hsv, (0, 0, self.probe_v_min), (180, 255, 255))
+        lit = cv2.morphologyEx(lit, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(lit, connectivity=8)
+        if n <= 1:
+            self.get_logger().warn(
+                '[probe] 명도 %d 이상인 영역이 아예 없음. 화면이 어둡거나 '
+                'probe_v_min 을 낮춰야 함' % self.probe_v_min)
+            return
+
+        order = sorted(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA], reverse=True)
+        lines = []
+        for i in order[:self.probe_top_n]:
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < 10:
+                continue
+            m = labels == i
+            hh = int(np.median(hsv[:, :, 0][m]))
+            ss = int(np.median(hsv[:, :, 1][m]))
+            vv = int(np.median(hsv[:, :, 2][m]))
+            cx, cy = cents[i]
+            lines.append(
+                '  area=%-6d H=%-3d S=%-3d V=%-3d  위치 x=%.2f y=%.2f'
+                % (area, hh, ss, vv, cx / w, cy / h))
+
+        if not lines:
+            return
+
+        self.get_logger().info(
+            '[probe] 밝은 영역 (현재 기준: ROI y %.2f~%.2f, sat_min=%d, val_min=%d, '
+            'green H %d~%d, min_blob_px=%d)\n%s'
+            % (self.roi_top_frac, self.roi_bottom_frac, self.sat_min, self.val_min,
+               self.green_h_min, self.green_h_max, self.min_blob_px, '\n'.join(lines)))
+
     def on_image(self, msg: Image):
         try:
             bgr = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
@@ -97,6 +162,9 @@ class TrafficLightNode(Node):
             self.pub_valid.publish(Bool(data=False))
             self.pub_state.publish(String(data=STATE_NONE))
             return
+
+        if self.debug_probe:
+            self._probe(bgr)
 
         h = bgr.shape[0]
         y0 = int(h * self.roi_top_frac)

@@ -143,6 +143,35 @@ check('신호등 없음 -> valid=True 유지',
       (lambda: (tl.clear(), tl.on_image(ros_stubs.Image(cv=light(None))),
                 tl.last('traffic/valid'))[2])() is True)
 
+
+def probe_lines(node):
+    return [m for lvl, m in node._logger.lines if '[probe]' in m]
+
+
+# 진단 모드: 실측 H/S/V 를 로그로 뽑아준다
+tlp = tl_mod.TrafficLightNode()
+tlp.debug_probe = True
+tlp._probe_stamp = 0.0
+tlp.on_image(ros_stubs.Image(cv=light((0, 255, 0))))       # 순수 초록: H=60 S=255
+pl = probe_lines(tlp)
+check('probe 로그 출력됨', len(pl) > 0)
+check('probe 가 초록 색상(H=60) 보고', bool(pl) and 'H=60' in pl[-1],
+      '(%s)' % (pl[-1].split('\n')[-1].strip() if pl else '없음'))
+
+# 실전에서 제일 흔한 실패: LED 가운데가 하얗게 떠서 채도가 낮게 잡히는 경우.
+# 검출은 실패(NONE)하지만 probe 는 낮은 S 를 그대로 보고해서 원인을 알려줘야 한다.
+tlw = tl_mod.TrafficLightNode()
+tlw.debug_probe = True
+tlw._probe_stamp = 0.0
+tlw.clear()
+tlw.on_image(ros_stubs.Image(cv=light((180, 255, 180))))   # 흐린 초록: S 가 낮다
+pw = probe_lines(tlw)
+check('흐린 초록 -> 검출 실패(NONE)', tlw.last('traffic/light_state') == 'NONE',
+      '(=%s)' % tlw.last('traffic/light_state'))
+check('probe 가 낮은 채도를 원인으로 노출',
+      bool(pw) and any('S=%d' % s in pw[-1] for s in range(60, 100)),
+      '(%s)' % (pw[-1].split('\n')[-1].strip() if pw else '없음'))
+
 # ====================================================================== 3
 print('\n[3] lane_obstacle_node - 차선 점유 판정')
 ob = obs_mod.LaneObstacleNode()
