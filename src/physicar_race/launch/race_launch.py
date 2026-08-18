@@ -56,6 +56,18 @@ def generate_launch_description():
         # HSV 튜닝 중에는 켜두면 훨씬 빠르다. 기록 측정 시에는 꺼서 부하를 줄인다.
         DeclareLaunchArgument('publish_debug', default_value='false'),
 
+        # --- 차선 검출 튜닝 ---
+        # 기본값은 placeholder다. 안 잡히면 debug_probe:=true 로 실측 H/S/V 를
+        # 로그에 찍어보고 그 값으로 채운다.
+        DeclareLaunchArgument('lane_roi_top_frac', default_value='0.55'),
+        DeclareLaunchArgument('lane_white_s_max', default_value='60'),
+        DeclareLaunchArgument('lane_white_v_min', default_value='180'),
+        DeclareLaunchArgument('lane_yellow_h_min', default_value='18'),
+        DeclareLaunchArgument('lane_yellow_h_max', default_value='38'),
+        DeclareLaunchArgument('lane_yellow_s_min', default_value='90'),
+        DeclareLaunchArgument('lane_yellow_v_min', default_value='90'),
+        DeclareLaunchArgument('lane_min_peak_px', default_value='8'),
+
         # --- 신호등 검출 튜닝 ---
         # 기본값은 placeholder다. 검출이 안 되면 debug_probe:=true 로 실제 H/S/V 를
         # 로그에 찍어보고 그 값으로 아래를 채우면 된다.
@@ -83,7 +95,18 @@ def generate_launch_description():
     lane_detect = Node(
         package=PKG, executable='lane_detect_node', name='lane_detect_node',
         output='screen',
-        parameters=[{'publish_debug': _bool('publish_debug')}],
+        parameters=[{
+            'publish_debug': _bool('publish_debug'),
+            'debug_probe': _bool('debug_probe'),
+            'roi_top_frac': _float('lane_roi_top_frac'),
+            'white_s_max': _int('lane_white_s_max'),
+            'white_v_min': _int('lane_white_v_min'),
+            'yellow_h_min': _int('lane_yellow_h_min'),
+            'yellow_h_max': _int('lane_yellow_h_max'),
+            'yellow_s_min': _int('lane_yellow_s_min'),
+            'yellow_v_min': _int('lane_yellow_v_min'),
+            'min_peak_px': _int('lane_min_peak_px'),
+        }],
         remappings=[('image_raw', image_topic)],
     )
 

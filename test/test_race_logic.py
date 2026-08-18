@@ -113,6 +113,24 @@ check('F 홀드 만료 -> UNKNOWN', ln2.last('lane/current_lane') == lane_mod.LA
       '(=%s)' % ln2.last('lane/current_lane'))
 check('F UNKNOWN이어도 valid 유지', ln2.last('lane/valid') is True)
 
+# G. 실전에서 만난 '차선 인지 유실'. 흰선이 기준보다 어두우면 마스크에 안 걸려
+#    valid=False 가 되고, 판단 노드는 흰선 위치를 모르므로 차를 세운다.
+#    probe 는 그 흰선을 찾아내서 V 가 얼마나 모자란지 짚어줘야 한다.
+ln3 = lane_mod.LaneDetectNode()
+ln3.debug_probe = True
+ln3._probe_stamp = 0.0
+dim = road(white_left=20, white_right=480, yellow=160)
+dim[dim[:, :, 0] == 255] = 150          # 흰선을 회색(V=150)으로 낮춤
+feed(ln3, dim)
+check('G 어두운 흰선 -> 인지 유실(valid=False)', ln3.last('lane/valid') is False,
+      '(=%s)' % ln3.last('lane/valid'))
+
+lp = [m for lvl, m in ln3._logger.lines if 'lane probe' in m]
+white_sec = (lp[-1].split('흰선 후보')[-1].split('노란선 후보')[0]) if lp else ''
+check('G probe 가 그 흰선을 후보로 찾아냄', 'V=150' in white_sec,
+      '(%s)' % white_sec.strip().split('\n')[0].strip())
+check('G probe 가 V 부족을 사유로 지목', 'V 150<180' in white_sec)
+
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')
 tl = tl_mod.TrafficLightNode()

@@ -84,6 +84,19 @@ class LaneDetectNode(Node):
 
         self.declare_parameter('publish_debug', False)
 
+        # 흰선/노란선이 안 잡힐 때 '실제로 무슨 색이 보이는가'를 찍어주는 진단 모드.
+        # 후보를 찾을 때는 일부러 느슨한 기준을 쓴다. 현재 임계값으로 걸러지는
+        # 것까지 보여야 무엇 때문에 탈락했는지 알 수 있기 때문이다.
+        self.declare_parameter('debug_probe', False)
+        self.declare_parameter('probe_period_s', 1.0)
+        self.declare_parameter('probe_top_n', 4)
+        self.declare_parameter('probe_white_s_max', 120)
+        self.declare_parameter('probe_white_v_min', 120)
+        self.declare_parameter('probe_yellow_h_min', 10)
+        self.declare_parameter('probe_yellow_h_max', 45)
+        self.declare_parameter('probe_yellow_s_min', 40)
+        self.declare_parameter('probe_yellow_v_min', 60)
+
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
         self.near_band_frac = float(p('near_band_frac').value)
@@ -101,6 +114,16 @@ class LaneDetectNode(Node):
         self.lane_width_frac = float(p('lane_width_frac_init').value)
         self.cam_center_offset_px = float(p('cam_center_offset_px').value)
         self.publish_debug = bool(p('publish_debug').value)
+        self.debug_probe = bool(p('debug_probe').value)
+        self.probe_period_s = float(p('probe_period_s').value)
+        self.probe_top_n = int(p('probe_top_n').value)
+        self.probe_white_s_max = int(p('probe_white_s_max').value)
+        self.probe_white_v_min = int(p('probe_white_v_min').value)
+        self.probe_yellow_h_min = int(p('probe_yellow_h_min').value)
+        self.probe_yellow_h_max = int(p('probe_yellow_h_max').value)
+        self.probe_yellow_s_min = int(p('probe_yellow_s_min').value)
+        self.probe_yellow_v_min = int(p('probe_yellow_v_min').value)
+        self._probe_stamp = 0.0
 
         self.bridge = CvBridge()
 
@@ -178,6 +201,93 @@ class LaneDetectNode(Node):
         centroid = float((wgt * np.arange(a, b)).sum() / total)
         return float(lo + centroid)
 
+    # ------------------------------------------------------------------ 진단
+
+    def _blobs(self, hsv, mask):
+        """마스크에서 큰 덩어리들을 (면적, H, S, V, 중심) 목록으로."""
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if n <= 1:
+            return []
+        order = sorted(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA], reverse=True)
+        out = []
+        for i in order[:self.probe_top_n]:
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < 8:
+                continue
+            m = labels == i
+            out.append((
+                area,
+                int(np.median(hsv[:, :, 0][m])),
+                int(np.median(hsv[:, :, 1][m])),
+                int(np.median(hsv[:, :, 2][m])),
+                cents[i],
+            ))
+        return out
+
+    def _probe(self, roi):
+        """흰선/노란선이 안 잡히는 이유를 실측값으로 짚어준다.
+
+        노면 색(ROI 중앙값)을 같이 찍는 게 중요하다. 흰선 기준은 '노면보다
+        밝고 채도가 낮은 것'인데, 노면 자체가 밝으면 둘이 구분되지 않는다.
+        """
+        now = time.time()
+        if (now - self._probe_stamp) < self.probe_period_s:
+            return
+        self._probe_stamp = now
+
+        rh, rw = roi.shape[:2]
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+
+        white = cv2.inRange(hsv, (0, 0, self.probe_white_v_min),
+                            (180, self.probe_white_s_max, 255))
+        yellow = cv2.inRange(hsv,
+                             (self.probe_yellow_h_min, self.probe_yellow_s_min,
+                              self.probe_yellow_v_min),
+                             (self.probe_yellow_h_max, 255, 255))
+
+        def fmt(blobs, kind):
+            rows = []
+            for area, hh, ss, vv, (cx, cy) in blobs:
+                why = []
+                if kind == 'white':
+                    if ss > self.white_s_max:
+                        why.append('S %d>%d' % (ss, self.white_s_max))
+                    if vv < self.white_v_min:
+                        why.append('V %d<%d' % (vv, self.white_v_min))
+                else:
+                    if not (self.yellow_h_min <= hh <= self.yellow_h_max):
+                        why.append('H %d 가 %d~%d 밖' % (hh, self.yellow_h_min,
+                                                        self.yellow_h_max))
+                    if ss < self.yellow_s_min:
+                        why.append('S %d<%d' % (ss, self.yellow_s_min))
+                    if vv < self.yellow_v_min:
+                        why.append('V %d<%d' % (vv, self.yellow_v_min))
+                rows.append('  area=%-6d H=%-3d S=%-3d V=%-3d  x=%.2f  -> %s'
+                            % (area, hh, ss, vv, cx / rw,
+                               '통과' if not why else '탈락: ' + ', '.join(why)))
+            return rows or ['  (없음)']
+
+        med = (int(np.median(hsv[:, :, 0])), int(np.median(hsv[:, :, 1])),
+               int(np.median(hsv[:, :, 2])))
+
+        self.get_logger().info(
+            '[lane probe] 현재 기준: 흰선 S<=%d V>=%d / 노란선 H %d~%d S>=%d V>=%d, '
+            'min_peak_px=%d, ROI 위 %.2f 잘라냄\n'
+            '[lane probe] ROI 전체 중앙값(=노면 추정): H=%d S=%d V=%d\n'
+            '[lane probe] 흰선 후보 (S<=%d, V>=%d):\n%s\n'
+            '[lane probe] 노란선 후보 (H %d~%d, S>=%d, V>=%d):\n%s'
+            % (self.white_s_max, self.white_v_min,
+               self.yellow_h_min, self.yellow_h_max,
+               self.yellow_s_min, self.yellow_v_min,
+               self.min_peak_px, self.roi_top_frac,
+               med[0], med[1], med[2],
+               self.probe_white_s_max, self.probe_white_v_min,
+               '\n'.join(fmt(self._blobs(hsv, white), 'white')),
+               self.probe_yellow_h_min, self.probe_yellow_h_max,
+               self.probe_yellow_s_min, self.probe_yellow_v_min,
+               '\n'.join(fmt(self._blobs(hsv, yellow), 'yellow'))))
+
     # ------------------------------------------------------------- 메인 콜백
 
     def on_image(self, msg: Image):
@@ -197,6 +307,9 @@ class LaneDetectNode(Node):
 
         if self._lane_w is None:
             self._lane_w = self.lane_width_frac * w
+
+        if self.debug_probe:
+            self._probe(roi)
 
         white, yellow = self._masks(roi)
 
