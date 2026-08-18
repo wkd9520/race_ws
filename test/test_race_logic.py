@@ -325,6 +325,47 @@ perceive(j, valid=False); obstacles(j)
 j.clear(); j._tick()
 check('lane invalid -> 정지', j.last('/speed') == 0.0)
 
+
+# 4-4b 정지 사유를 셋으로 구분해서 말하는가.
+# 런치 직후 '아직 안 옴'과 '못 찾는 중'과 '끊김'은 조치가 전혀 다르다.
+def stall_msg(setup):
+    jj = new_judge()
+    jj.require_green = False
+    jj.state = jud_mod.ST_RACING
+    setup(jj)
+    obstacles(jj)
+    jj.clear(); jj._tick()
+    warns = [m for lvl, m in jj._logger.lines if lvl == 'WARN']
+    return warns[-1] if warns else ''
+
+
+def never_received(jj):
+    pass                     # lane_stamp 가 0.0 인 상태 그대로
+
+
+def not_detected(jj):
+    perceive(jj, valid=False)   # 수신은 되는데 valid=false
+
+
+def went_stale(jj):
+    perceive(jj, valid=True)
+    jj.lane_stamp -= 10.0       # 받았었지만 오래됨
+
+
+m1 = stall_msg(never_received)
+check('런치 직후 -> "입력 대기 중"으로 안내', '대기 중' in m1, '(%s)' % m1[:40])
+check('  토픽 이름 확인을 유도', 'image_topic' in m1)
+
+m2 = stall_msg(not_detected)
+check('valid=false -> "미검출"로 안내', '미검출' in m2, '(%s)' % m2[:40])
+check('  debug_probe 사용을 유도', 'debug_probe' in m2)
+
+m3 = stall_msg(went_stale)
+check('오래됨 -> "끊김"으로 안내', '끊김' in m3, '(%s)' % m3[:40])
+check('  경과 시간을 같이 표시', '초 전' in m3)
+
+check('세 사유가 서로 다른 문구', len({m1, m2, m3}) == 3)
+
 # 4-5 차선 변경
 j2 = new_judge()
 j2.require_green = False

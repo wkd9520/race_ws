@@ -223,6 +223,25 @@ class RaceJudgmentNode(Node):
             self.get_logger().warn('수동 출발 명령 수신 - 신호등 게이트 건너뜀')
             self.state = ST_RACING
 
+    def _lane_stall_reason(self, now):
+        """차가 안 가는 이유를 셋으로 갈라 말한다.
+
+        '차선 인지 유실' 한 줄로 뭉뚱그리면 셋을 구분할 수 없다. 특히 런치
+        직후에는 아직 첫 메시지가 안 온 것뿐인데 유실로 읽혀 엉뚱한 데를
+        뒤지게 된다. 조치가 각각 다르므로 원인을 분리해서 말한다.
+        """
+        if self.lane_stamp == 0.0:
+            return ('차선 인지 입력 대기 중 - lane/valid 를 아직 한 번도 못 받음. '
+                    'lane_detect_node 가 떴는지, 카메라 토픽 이름(image_topic)이 '
+                    '맞는지 확인할 것')
+        age = now - self.lane_stamp
+        if age >= self.lane_timeout:
+            return ('차선 입력 끊김 - 마지막 수신 %.1f초 전 (허용 %.1f초). '
+                    '카메라 프레임이 멈췄거나 노드가 죽었을 수 있다'
+                    % (age, self.lane_timeout))
+        return ('차선 미검출 - lane/valid=false, 흰선을 못 찾는 중. '
+                'debug_probe:=true 로 원인 확인할 것')
+
     # ------------------------------------------------------------ 제어 루프
 
     def control_tick(self):
@@ -258,7 +277,7 @@ class RaceJudgmentNode(Node):
         if not lane_fresh:
             # 차선을 못 보면 흰선 위치를 모른다 = 실격 위험을 통제할 수 없다.
             self.state = ST_EMERGENCY
-            self.get_logger().warn('차선 인지 유실 - 정지', throttle_duration_sec=1.0)
+            self.get_logger().warn(self._lane_stall_reason(now), throttle_duration_sec=1.0)
             self._publish(0.0, 0.0)
             return
 
