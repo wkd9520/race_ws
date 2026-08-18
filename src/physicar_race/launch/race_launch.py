@@ -67,6 +67,11 @@ def generate_launch_description():
         DeclareLaunchArgument('lane_yellow_s_min', default_value='90'),
         DeclareLaunchArgument('lane_yellow_v_min', default_value='90'),
         DeclareLaunchArgument('lane_min_peak_px', default_value='8'),
+        # 실제로 선을 찾는 '근거리 밴드'의 ROI 내 위치/높이.
+        # 밴드가 차체를 보고 있거나 선이 그보다 멀리 있으면 색이 맞아도 못 찾는다.
+        # 값을 낮추면 밴드가 위(먼 쪽)로 올라간다.
+        DeclareLaunchArgument('lane_near_band_frac', default_value='0.70'),
+        DeclareLaunchArgument('lane_band_height_frac', default_value='0.25'),
 
         # --- 신호등 검출 튜닝 ---
         # 기본값은 placeholder다. 검출이 안 되면 debug_probe:=true 로 실제 H/S/V 를
@@ -106,6 +111,8 @@ def generate_launch_description():
             'yellow_s_min': _int('lane_yellow_s_min'),
             'yellow_v_min': _int('lane_yellow_v_min'),
             'min_peak_px': _int('lane_min_peak_px'),
+            'near_band_frac': _float('lane_near_band_frac'),
+            'band_height_frac': _float('lane_band_height_frac'),
         }],
         remappings=[('image_raw', image_topic)],
     )

@@ -225,7 +225,35 @@ class LaneDetectNode(Node):
             ))
         return out
 
-    def _probe(self, roi):
+    def _band_report(self, mask, name, ny0, bh, full_h, roi_y0):
+        """근거리 밴드에서 실제로 피크를 잡는지 그대로 보고한다.
+
+        색이 맞아도 그 색이 밴드 밖(더 멀리)에 있으면 못 찾는다. 후보 목록만
+        봐서는 이걸 구분할 수 없으므로, 판정에 쓰는 바로 그 밴드의 열 프로파일을
+        따로 찍는다.
+        """
+        prof = self._profile(mask, ny0, ny0 + bh)
+        w = len(prof)
+        cx = w * 0.5 + self.cam_center_offset_px
+        y_lo = (roi_y0 + ny0) / full_h
+        y_hi = (roi_y0 + ny0 + bh) / full_h
+
+        def side(lo, hi, label):
+            lo, hi = max(0, int(lo)), min(w, int(hi))
+            if hi - lo <= 0:
+                return '%s: 구간 없음' % label
+            seg = prof[lo:hi]
+            i = int(np.argmax(seg))
+            peak = float(seg[i])
+            ok = peak >= self.min_peak_px
+            return ('%s: 최대 %d px @ x=%.2f  -> %s'
+                    % (label, int(peak), (lo + i) / w,
+                       '검출' if ok else '미달(min_peak_px=%d)' % self.min_peak_px))
+
+        return ('  %s 밴드 y %.2f~%.2f | %s | %s'
+                % (name, y_lo, y_hi, side(0, cx, '좌'), side(cx, w, '우')))
+
+    def _probe(self, roi, full_h, roi_y0):
         """흰선/노란선이 안 잡히는 이유를 실측값으로 짚어준다.
 
         노면 색(ROI 중앙값)을 같이 찍는 게 중요하다. 흰선 기준은 '노면보다
@@ -263,20 +291,28 @@ class LaneDetectNode(Node):
                         why.append('S %d<%d' % (ss, self.yellow_s_min))
                     if vv < self.yellow_v_min:
                         why.append('V %d<%d' % (vv, self.yellow_v_min))
-                rows.append('  area=%-6d H=%-3d S=%-3d V=%-3d  x=%.2f  -> %s'
+                rows.append('  area=%-6d H=%-3d S=%-3d V=%-3d  x=%.2f y=%.2f  -> %s'
                             % (area, hh, ss, vv, cx / rw,
+                               (roi_y0 + cy) / full_h,
                                '통과' if not why else '탈락: ' + ', '.join(why)))
             return rows or ['  (없음)']
 
         med = (int(np.median(hsv[:, :, 0])), int(np.median(hsv[:, :, 1])),
                int(np.median(hsv[:, :, 2])))
 
+        # 실제 판정에 쓰는 밴드에서 무엇이 잡히는지. 색은 맞는데 valid=False 면
+        # 대개 여기서 갈린다 -- 선이 밴드보다 멀리 있거나, 밴드가 차체를 보고 있다.
+        strict_w, strict_y = self._masks(roi)
+        bh = max(2, int(rh * self.band_height_frac))
+        ny0 = max(0, min(rh - bh, int(rh * self.near_band_frac)))
+
         self.get_logger().info(
             '[lane probe] 현재 기준: 흰선 S<=%d V>=%d / 노란선 H %d~%d S>=%d V>=%d, '
             'min_peak_px=%d, ROI 위 %.2f 잘라냄\n'
             '[lane probe] ROI 전체 중앙값(=노면 추정): H=%d S=%d V=%d\n'
             '[lane probe] 흰선 후보 (S<=%d, V>=%d):\n%s\n'
-            '[lane probe] 노란선 후보 (H %d~%d, S>=%d, V>=%d):\n%s'
+            '[lane probe] 노란선 후보 (H %d~%d, S>=%d, V>=%d):\n%s\n'
+            '[lane probe] 판정 밴드 (여기서 못 찾으면 valid=False):\n%s\n%s'
             % (self.white_s_max, self.white_v_min,
                self.yellow_h_min, self.yellow_h_max,
                self.yellow_s_min, self.yellow_v_min,
@@ -286,7 +322,9 @@ class LaneDetectNode(Node):
                '\n'.join(fmt(self._blobs(hsv, white), 'white')),
                self.probe_yellow_h_min, self.probe_yellow_h_max,
                self.probe_yellow_s_min, self.probe_yellow_v_min,
-               '\n'.join(fmt(self._blobs(hsv, yellow), 'yellow'))))
+               '\n'.join(fmt(self._blobs(hsv, yellow), 'yellow')),
+               self._band_report(strict_w, '흰선', ny0, bh, full_h, roi_y0),
+               self._band_report(strict_y, '노란선', ny0, bh, full_h, roi_y0)))
 
     # ------------------------------------------------------------- 메인 콜백
 
@@ -309,7 +347,7 @@ class LaneDetectNode(Node):
             self._lane_w = self.lane_width_frac * w
 
         if self.debug_probe:
-            self._probe(roi)
+            self._probe(roi, h, int(h * self.roi_top_frac))
 
         white, yellow = self._masks(roi)
 
