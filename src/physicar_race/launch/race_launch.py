@@ -14,12 +14,18 @@
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 PKG = 'physicar_race'
+
+
+def _truthy(context, name):
+    return LaunchConfiguration(name).perform(context).strip().lower() in (
+        'true', '1', 'yes', 'on')
 
 
 def _bool(name):
@@ -43,6 +49,10 @@ def generate_launch_description():
 
         # 신호등이 없는 맵이면 false. 안 그러면 초록을 못 봐서 영원히 출발하지 않는다.
         DeclareLaunchArgument('require_green', default_value='true'),
+
+        # 신호등 노드 자체를 띄울지. false 면 주행 노드만 돌아간다.
+        # 이 경우 출발 게이트를 열 방법이 없으므로 require_green 은 자동으로 무시된다.
+        DeclareLaunchArgument('use_traffic_light', default_value='true'),
 
         # 8/18 공개된 코스 규격의 실제 차선 폭으로 교체할 것. 기본값은 추정치다.
         DeclareLaunchArgument('lane_width_m', default_value='0.50'),
@@ -120,6 +130,7 @@ def generate_launch_description():
     traffic_light = Node(
         package=PKG, executable='traffic_light_node', name='traffic_light_node',
         output='screen',
+        condition=IfCondition(LaunchConfiguration('use_traffic_light')),
         parameters=[{
             'publish_debug': _bool('publish_debug'),
             'debug_probe': _bool('debug_probe'),
@@ -149,13 +160,31 @@ def generate_launch_description():
         remappings=[('scan', scan_topic)],
     )
 
-    judgment = Node(
-        package=PKG, executable='race_judgment_node', name='race_judgment_node',
-        output='screen',
-        parameters=[{
-            'require_green': _bool('require_green'),
-            'v_max': _float('v_max'),
-        }],
-    )
+    def judgment(context, *_a, **_kw):
+        """신호등 노드를 안 띄우면 require_green 은 성립할 수 없다.
 
-    return LaunchDescription(args + [lane_detect, traffic_light, obstacle, judgment])
+        그대로 두면 초록을 볼 방법이 없어 WAIT_GREEN 에서 영원히 멈춘다.
+        원인을 찾기 어려운 실패라, 여기서 강제로 끄고 그 사실을 로그로 알린다.
+        """
+        use_tl = _truthy(context, 'use_traffic_light')
+        want_green = _truthy(context, 'require_green')
+        effective = want_green and use_tl
+
+        out = []
+        if want_green and not use_tl:
+            out.append(LogInfo(msg=(
+                '[race_launch] use_traffic_light:=false 라서 require_green 을 무시한다. '
+                '신호등 노드 없이는 출발 게이트를 열 수 없다.')))
+
+        out.append(Node(
+            package=PKG, executable='race_judgment_node', name='race_judgment_node',
+            output='screen',
+            parameters=[{
+                'require_green': effective,
+                'v_max': _float('v_max'),
+            }],
+        ))
+        return out
+
+    return LaunchDescription(
+        args + [lane_detect, traffic_light, obstacle, OpaqueFunction(function=judgment)])
