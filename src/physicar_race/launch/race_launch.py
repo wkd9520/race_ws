@@ -60,6 +60,10 @@ def generate_launch_description():
         # 기본값은 placeholder다. 검출이 안 되면 debug_probe:=true 로 실제 H/S/V 를
         # 로그에 찍어보고 그 값으로 아래를 채우면 된다.
         DeclareLaunchArgument('debug_probe', default_value='false'),
+        # probe 가 후보를 찾을 때 쓰는 느슨한 기준. 화면이 어두우면 낮춘다.
+        DeclareLaunchArgument('probe_s_min', default_value='40'),
+        DeclareLaunchArgument('probe_v_min_relaxed', default_value='60'),
+        DeclareLaunchArgument('probe_top_n', default_value='5'),
         # 신호등이 화면에서 차지하는 세로 구간. 1.0 이면 화면 전체를 본다.
         DeclareLaunchArgument('tl_roi_top_frac', default_value='0.0'),
         DeclareLaunchArgument('tl_roi_bottom_frac', default_value='0.55'),
@@ -89,6 +93,9 @@ def generate_launch_description():
         parameters=[{
             'publish_debug': _bool('publish_debug'),
             'debug_probe': _bool('debug_probe'),
+            'probe_s_min': _int('probe_s_min'),
+            'probe_v_min_relaxed': _int('probe_v_min_relaxed'),
+            'probe_top_n': _int('probe_top_n'),
             'roi_top_frac': _float('tl_roi_top_frac'),
             'roi_bottom_frac': _float('tl_roi_bottom_frac'),
             'sat_min': _int('tl_sat_min'),

@@ -62,9 +62,17 @@ class TrafficLightNode(Node):
         # 위치를 로그로 뽑아 그 값을 그대로 파라미터에 넣으면 된다.
         # ROI 밖에 있어서 못 보는 경우까지 잡으려고 ROI 가 아닌 전체 화면을 훑는다.
         self.declare_parameter('debug_probe', False)
-        self.declare_parameter('probe_v_min', 120)     # 이 명도 이상만 후보로
+        self.declare_parameter('probe_v_min', 120)     # '밝은 영역' 목록의 명도 기준
         self.declare_parameter('probe_period_s', 1.0)  # 로그 도배 방지
-        self.declare_parameter('probe_top_n', 4)
+        self.declare_parameter('probe_top_n', 5)
+        # 적/녹 후보를 찾을 때는 일부러 느슨하게 본다. 현재 임계값으로 걸러지는
+        # 후보까지 보여야 '무엇 때문에 탈락했는지'를 알 수 있기 때문이다.
+        self.declare_parameter('probe_s_min', 40)
+        self.declare_parameter('probe_v_min_relaxed', 60)
+        self.declare_parameter('probe_green_h_min', 35)
+        self.declare_parameter('probe_green_h_max', 95)
+        self.declare_parameter('probe_red_h_lo_max', 15)
+        self.declare_parameter('probe_red_h_hi_min', 165)
 
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
@@ -81,6 +89,12 @@ class TrafficLightNode(Node):
         self.probe_v_min = int(p('probe_v_min').value)
         self.probe_period_s = float(p('probe_period_s').value)
         self.probe_top_n = int(p('probe_top_n').value)
+        self.probe_s_min = int(p('probe_s_min').value)
+        self.probe_v_min_relaxed = int(p('probe_v_min_relaxed').value)
+        self.probe_green_h_min = int(p('probe_green_h_min').value)
+        self.probe_green_h_max = int(p('probe_green_h_max').value)
+        self.probe_red_h_lo_max = int(p('probe_red_h_lo_max').value)
+        self.probe_red_h_hi_min = int(p('probe_red_h_hi_min').value)
         self._probe_stamp = 0.0
 
         self.bridge = CvBridge()
@@ -105,13 +119,68 @@ class TrafficLightNode(Node):
         # 0번은 배경
         return int(stats[1:, cv2.CC_STAT_AREA].max())
 
-    def _probe(self, bgr):
-        """화면에서 밝은 덩어리들의 실측 H/S/V 와 위치를 로그로 뽑는다.
+    def _hue_blobs(self, hsv, ranges, s_min, v_min):
+        """주어진 색상(H) 구간에서 덩어리를 찾아 (면적, H, S, V, 중심) 목록으로 돌려준다.
 
-        검출이 안 될 때 원인은 대개 셋 중 하나인데, 이 로그 한 번이면 갈린다:
-          - 신호등이 ROI 밖에 있다        -> y 값이 roi_top/bottom_frac 범위 밖
-          - 채도/명도 기준이 너무 빡세다  -> S 나 V 가 sat_min/val_min 미만
-          - 색상(H) 범위가 안 맞다        -> H 가 green_h_min~max 밖
+        면적 순으로만 훑으면 하늘/노면 같은 큰 배경이 상위를 다 차지해서 정작
+        작은 램프가 순위 밖으로 밀린다. 게다가 램프가 밝은 배경에 닿아 있으면
+        하나의 덩어리로 붙어버려 중앙값이 배경 색으로 나온다.
+        그래서 색상 구간을 먼저 좁히고 나서 덩어리를 찾는다.
+        """
+        mask = None
+        for lo, hi in ranges:
+            m = cv2.inRange(hsv, (lo, s_min, v_min), (hi, 255, 255))
+            mask = m if mask is None else cv2.bitwise_or(mask, m)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+        n, labels, stats, cents = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if n <= 1:
+            return []
+
+        order = sorted(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA], reverse=True)
+        out = []
+        for i in order[:self.probe_top_n]:
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < 4:
+                continue
+            m = labels == i
+            out.append((
+                area,
+                int(np.median(hsv[:, :, 0][m])),
+                int(np.median(hsv[:, :, 1][m])),
+                int(np.median(hsv[:, :, 2][m])),
+                cents[i],
+            ))
+        return out
+
+    def _verdict(self, area, hh, ss, vv, cy, h):
+        """이 후보가 현재 기준으로 왜 걸러지는지 한 줄로 판정한다."""
+        why = []
+        yf = cy / h
+        if not (self.roi_top_frac <= yf <= self.roi_bottom_frac):
+            why.append('ROI 밖(y %.2f)' % yf)
+        if ss < self.sat_min:
+            why.append('S %d<%d' % (ss, self.sat_min))
+        if vv < self.val_min:
+            why.append('V %d<%d' % (vv, self.val_min))
+        if area < self.min_blob_px:
+            why.append('면적 %d<%d' % (area, self.min_blob_px))
+        in_green = self.green_h_min <= hh <= self.green_h_max
+        in_red = hh <= self.red_h_lo_max or hh >= self.red_h_hi_min
+        if not (in_green or in_red):
+            why.append('H %d 가 적/녹 범위 밖' % hh)
+        return '통과' if not why else '탈락: ' + ', '.join(why)
+
+    def _probe(self, bgr):
+        """검출 실패 원인을 실측값으로 짚어준다.
+
+        세 묶음을 찍는다:
+          1. 화면에서 가장 밝은 덩어리들 (하늘/노면이 뭘로 잡히는지 파악용)
+          2. 초록 후보 - 색상 구간을 좁히고 채도/명도는 느슨하게
+          3. 빨강 후보 - 위와 동일
+
+        2, 3번이 핵심이다. 각 후보마다 현재 기준으로 통과인지 탈락인지,
+        탈락이면 어느 조건에서 걸렸는지 같이 찍으므로 고칠 파라미터가 바로 나온다.
         """
         now = time.time()
         if (now - self._probe_stamp) < self.probe_period_s:
@@ -120,39 +189,38 @@ class TrafficLightNode(Node):
 
         h, w = bgr.shape[:2]
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        lit = cv2.inRange(hsv, (0, 0, self.probe_v_min), (180, 255, 255))
-        lit = cv2.morphologyEx(lit, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
-        n, labels, stats, cents = cv2.connectedComponentsWithStats(lit, connectivity=8)
-        if n <= 1:
-            self.get_logger().warn(
-                '[probe] 명도 %d 이상인 영역이 아예 없음. 화면이 어둡거나 '
-                'probe_v_min 을 낮춰야 함' % self.probe_v_min)
-            return
+        def fmt(blobs, with_verdict):
+            rows = []
+            for area, hh, ss, vv, (cx, cy) in blobs:
+                row = ('  area=%-6d H=%-3d S=%-3d V=%-3d  위치 x=%.2f y=%.2f'
+                       % (area, hh, ss, vv, cx / w, cy / h))
+                if with_verdict:
+                    row += '  -> ' + self._verdict(area, hh, ss, vv, cy, h)
+                rows.append(row)
+            return rows or ['  (없음)']
 
-        order = sorted(range(1, n), key=lambda i: stats[i, cv2.CC_STAT_AREA], reverse=True)
-        lines = []
-        for i in order[:self.probe_top_n]:
-            area = int(stats[i, cv2.CC_STAT_AREA])
-            if area < 10:
-                continue
-            m = labels == i
-            hh = int(np.median(hsv[:, :, 0][m]))
-            ss = int(np.median(hsv[:, :, 1][m]))
-            vv = int(np.median(hsv[:, :, 2][m]))
-            cx, cy = cents[i]
-            lines.append(
-                '  area=%-6d H=%-3d S=%-3d V=%-3d  위치 x=%.2f y=%.2f'
-                % (area, hh, ss, vv, cx / w, cy / h))
-
-        if not lines:
-            return
+        bright = self._hue_blobs(hsv, [(0, 180)], 0, self.probe_v_min)
+        green = self._hue_blobs(
+            hsv, [(self.probe_green_h_min, self.probe_green_h_max)],
+            self.probe_s_min, self.probe_v_min_relaxed)
+        red = self._hue_blobs(
+            hsv, [(0, self.probe_red_h_lo_max), (self.probe_red_h_hi_min, 180)],
+            self.probe_s_min, self.probe_v_min_relaxed)
 
         self.get_logger().info(
-            '[probe] 밝은 영역 (현재 기준: ROI y %.2f~%.2f, sat_min=%d, val_min=%d, '
-            'green H %d~%d, min_blob_px=%d)\n%s'
+            '[probe] 현재 기준: ROI y %.2f~%.2f, sat_min=%d, val_min=%d, '
+            'green H %d~%d, min_blob_px=%d\n'
+            '[probe] 밝은 영역 (V>=%d):\n%s\n'
+            '[probe] 초록 후보 (H %d~%d, S>=%d, V>=%d):\n%s\n'
+            '[probe] 빨강 후보 (H<=%d 또는 >=%d, S>=%d, V>=%d):\n%s'
             % (self.roi_top_frac, self.roi_bottom_frac, self.sat_min, self.val_min,
-               self.green_h_min, self.green_h_max, self.min_blob_px, '\n'.join(lines)))
+               self.green_h_min, self.green_h_max, self.min_blob_px,
+               self.probe_v_min, '\n'.join(fmt(bright, False)),
+               self.probe_green_h_min, self.probe_green_h_max,
+               self.probe_s_min, self.probe_v_min_relaxed, '\n'.join(fmt(green, True)),
+               self.probe_red_h_lo_max, self.probe_red_h_hi_min,
+               self.probe_s_min, self.probe_v_min_relaxed, '\n'.join(fmt(red, True))))
 
     def on_image(self, msg: Image):
         try:

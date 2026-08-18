@@ -172,6 +172,35 @@ check('probe 가 낮은 채도를 원인으로 노출',
       bool(pw) and any('S=%d' % s in pw[-1] for s in range(60, 100)),
       '(%s)' % (pw[-1].split('\n')[-1].strip() if pw else '없음'))
 
+
+# 실전에서 실제로 만난 상황: 밝은 하늘이 화면을 덮고 있고 램프가 거기 붙어
+# 있으면, 밝기만으로 덩어리를 찾을 때 둘이 하나로 합쳐져 중앙값이 하늘 색으로
+# 나온다. 면적 순위로도 램프는 하늘에 밀려 안 보인다.
+# 색상 구간을 먼저 좁히면 램프가 분리돼서 잡혀야 한다.
+def sky_with_lamp():
+    img = np.full((H, W, 3), 40, np.uint8)
+    img[0:int(H * 0.45), :] = (235, 180, 120)     # 밝은 하늘 (H~104)
+    img[80:110, 300:330] = (0, 255, 0)            # 하늘에 맞닿은 작은 초록 램프
+    return img
+
+
+tlm = tl_mod.TrafficLightNode()
+tlm.debug_probe = True
+tlm._probe_stamp = 0.0
+tlm.on_image(ros_stubs.Image(cv=sky_with_lamp()))
+pm = probe_lines(tlm)
+msg = pm[-1] if pm else ''
+green_sec = msg.split('초록 후보')[-1].split('빨강 후보')[0] if '초록 후보' in msg else ''
+bright_sec = msg.split('밝은 영역')[-1].split('초록 후보')[0] if '밝은 영역' in msg else ''
+
+check('밝은 영역은 하늘에 가려 초록을 못 짚음',
+      'H=60' not in bright_sec,
+      '(하늘 H가 지배: %s)' % bright_sec.strip().split('\n')[0].strip())
+check('초록 후보 구간에서는 램프를 분리해서 찾음', 'H=60' in green_sec,
+      '(%s)' % green_sec.strip().split('\n')[0].strip())
+check('후보마다 통과/탈락 사유를 붙임',
+      '통과' in green_sec or '탈락' in green_sec)
+
 # ====================================================================== 3
 print('\n[3] lane_obstacle_node - 차선 점유 판정')
 ob = obs_mod.LaneObstacleNode()
