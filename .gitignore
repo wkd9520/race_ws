@@ -1,0 +1,15 @@
+# colcon 산출물
+build/
+install/
+log/
+
+# 파이썬
+__pycache__/
+*.pyc
+
+# 에디터 / 도구
+.vscode/
+.omc/
+
+# myapp.sh 빌드 캐시 스탬프
+.myapp_build_stamp
