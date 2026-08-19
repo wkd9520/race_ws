@@ -220,6 +220,44 @@ ros2 topic echo /traffic/light_state
 | `true` | `NONE` | 색 검출 실패. 아래 probe 로 실측값 확인 |
 | `true` | `RED` | 초록을 빨강으로 오인 |
 
+### 차선 HSV 대화형 튜닝 (슬라이더)
+
+probe 로 값을 읽고 다시 launch 하는 왕복이 번거로우면, 슬라이더로 바로 맞춘다.
+주행 스택과 별개로 띄우므로 차는 움직이지 않는다.
+
+```bash
+ros2 launch physicar_race hsv_tuner_launch.py
+```
+
+화면이 2x2 로 나온다:
+
+```
+원본 + ROI 경계선   |  흰선 마스크
+노란선 마스크       |  오버레이 (검출 개수 표시)
+```
+
+오버레이 좌하단의 `white=2 yellow=4` 가 판단 기준이다. **흰선 2개, 노란선 여러 개**가
+안정적으로 잡히면 맞춘 것이다.
+
+| 키 | 동작 |
+|---|---|
+| `s` | 지금 값을 launch 인자 한 줄로 출력 (복사해서 쓰면 됨) |
+| `r` | 기본값으로 되돌림 |
+| `q` | 종료하면서 값 출력 |
+
+슬라이더: `roi_top_pct`, `white_s_max`, `white_v_min`,
+`yellow_h_min/max`, `yellow_s_min/v_min`
+
+맞춘 값은 `[s]` 로 뽑아 `deploy/myapp.sh` 의 `LAUNCH_ARGS` 에 넣어 고정한다.
+
+> [!note] 디스플레이가 없으면 자동으로 전환된다
+> headless 컨테이너면 창을 못 띄우므로 `tuner/image` 토픽으로 발행한다.
+> 그 경우 값 조정은 파라미터로 하고(실시간 반영됨), 화면은 rqt_image_view 로 본다:
+> ```bash
+> ros2 param set /hsv_tuner_node white_v_min 120
+> ros2 run rqt_image_view rqt_image_view      # /tuner/image
+> ```
+
 ### 신호등 HSV 실측 (probe)
 
 임계값을 눈대중으로 돌리지 말고, 화면에 실제로 무슨 색이 보이는지 찍어본다:
