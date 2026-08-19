@@ -73,33 +73,42 @@ def feed(node, img):
 print('\n[1] lane_detect_node - 2차선 기하')
 ln = lane_mod.LaneDetectNode()
 
-# A. 오른쪽 차선 정중앙 (노란선 160, 우측 흰선 480 -> 차선중심 320 = 화면중심)
-feed(ln, road(white_left=20, white_right=480, yellow=160))
+# A. 목표는 '중앙선을 화면의 정해진 위치에 두기'다. 오른쪽 차선을 달리면
+#    중앙선이 내 왼쪽에 보여야 하므로 목표 x = 중심 - center_target_frac*half.
+#    기본 0.35 -> 320 - 112 = 208.
+feed(ln, road(white_left=20, white_right=480, yellow=208))
 check('A valid', ln.last('lane/valid') is True)
 check('A 현재차선=RIGHT', ln.last('lane/current_lane') == lane_mod.LANE_RIGHT,
       '(=%s)' % ln.last('lane/current_lane'))
-check('A offset_right≈0', abs(ln.last('lane/offset_right')) < 0.05,
+check('A 중앙선이 목표에 있으면 offset≈0', abs(ln.last('lane/offset_right')) < 0.05,
       '(=%.3f)' % ln.last('lane/offset_right'))
 check('A margin_right≈0.5', abs(ln.last('lane/margin_right') - 0.5) < 0.05,
       '(=%.3f)' % ln.last('lane/margin_right'))
 
-# B. 우측 흰선으로 치우침 (우측 흰선 400 -> 차선중심 280, 화면중심 320 -> +0.125)
-# 장면마다 차선폭이 달라서 새 노드를 쓴다. center_line 기준은 차선폭 추정에
-# 의존하는데, 앞 장면(폭 320)의 값이 EMA 로 남아 있으면 목표가 어긋난다.
-# 실제 트랙은 폭이 일정하므로 이건 테스트 장면 특유의 문제다.
+# B. 중앙선이 목표(208)보다 오른쪽에 보이면 차가 너무 왼쪽에 있다는 뜻 -> 양수.
 lnB = lane_mod.LaneDetectNode()
-feed(lnB, road(white_left=20, white_right=400, yellow=160))
-check('B offset_right>0 (중심보다 우측)', lnB.last('lane/offset_right') > 0.08,
+feed(lnB, road(white_left=20, white_right=480, yellow=270))
+check('B 중앙선이 목표보다 우측 -> offset>0 (차가 좌측)',
+      lnB.last('lane/offset_right') > 0.08,
       '(=%.3f)' % lnB.last('lane/offset_right'))
-check('B margin_right≈0.25', abs(lnB.last('lane/margin_right') - 0.25) < 0.05,
+lnB2 = lane_mod.LaneDetectNode()
+feed(lnB2, road(white_left=20, white_right=480, yellow=150))
+check('B 중앙선이 목표보다 좌측 -> offset<0 (차가 우측)',
+      lnB2.last('lane/offset_right') < -0.08,
+      '(=%.3f)' % lnB2.last('lane/offset_right'))
+# margin 은 흰선 위치에서 직접 나온다 (480 -> (480-320)/320 = 0.5)
+check('B margin_right≈0.5', abs(lnB.last('lane/margin_right') - 0.5) < 0.05,
       '(=%.3f)' % lnB.last('lane/margin_right'))
 
 # C. 왼쪽 차선 (노란선 480, 좌측 흰선 160 -> 차선중심 320)
 feed(ln, road(white_left=160, white_right=None, yellow=480))
 check('C 현재차선=LEFT', ln.last('lane/current_lane') == lane_mod.LANE_LEFT,
       '(=%s)' % ln.last('lane/current_lane'))
-check('C offset_left≈0', abs(ln.last('lane/offset_left')) < 0.05,
-      '(=%.3f)' % ln.last('lane/offset_left'))
+# 왼쪽 차선이면 중앙선이 내 오른쪽에 보여야 한다 -> 목표 x = 320 + 112 = 432
+lnC = lane_mod.LaneDetectNode()
+feed(lnC, road(white_left=160, white_right=None, yellow=432))
+check('C 왼쪽 차선 목표는 부호 반전', abs(lnC.last('lane/offset_left')) < 0.05,
+      '(=%.3f)' % lnC.last('lane/offset_left'))
 
 # D. 흰선 밟기 직전 (좌측 흰선이 화면중심 바로 왼쪽)
 feed(ln, road(white_left=290, white_right=620, yellow=None))
@@ -116,16 +125,16 @@ feed(ln2, road(white_left=20, white_right=480, yellow=160))
 check('F 노란선 보임 -> RIGHT', ln2.last('lane/current_lane') == lane_mod.LANE_RIGHT)
 ln2._yellow_stamp -= 10.0  # 홀드 시간 만료 강제
 feed(ln2, road(white_left=20, white_right=480, yellow=None))
-# 홀드가 만료돼도 UNKNOWN 으로 떨어뜨리지 않는다. 차선 개념을 잃으면 목표가
-# 통로 중앙으로 튀면서 조향이 계단식으로 점프하기 때문 -- 사행의 원인이다.
-# 대신 래치된 차선과 차선폭으로 중앙선 위치를 복원해 기하를 유지한다.
+# 홀드가 만료돼도 차선 판정은 래치가 유지한다. 다만 횡오차는 중앙선을
+# 못 보므로 0 으로 두고 헤딩(흰선 기울기)만으로 간다 -- 없는 값을 흰선에서
+# 지어내면 그 오차가 그대로 조향에 들어간다.
 check('F 홀드 만료해도 차선 유지 (래치)',
       ln2.last('lane/current_lane') == lane_mod.LANE_RIGHT,
       '(=%s)' % ln2.last('lane/current_lane'))
 check('F valid 유지', ln2.last('lane/valid') is True)
-check('F 중앙선 위치를 래치로 복원',
-      ln2._yellow_x is None,  # 홀드는 만료됨
-      '(홀드 만료 상태에서도 기하 유지)')
+check('F 중앙선 못 보면 횡오차는 0',
+      abs(ln2.last('lane/offset_right')) < 1e-6,
+      '(=%.3f, 헤딩만으로 주행)' % ln2.last('lane/offset_right'))
 
 # G. 실전에서 만난 '차선 인지 유실'. 흰선이 기준보다 어두우면 마스크에 안 걸려
 #    valid=False 가 되고, 판단 노드는 흰선 위치를 모르므로 차를 세운다.

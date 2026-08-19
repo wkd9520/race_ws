@@ -58,14 +58,18 @@ class LaneDetectNode(Node):
         self.declare_parameter('band_autotrack', True)
         self.declare_parameter('band_track_gain', 0.25)   # 밴드 이동 속도 (0~1)
 
-        # 주행 기준선을 무엇으로 잡을지.
-        #   'center_line' : 중앙선에서 일정 거리를 유지한다. 중앙선은 화면 한가운데라
-        #                   헤어핀에서도 계속 보이므로 목표가 안정적이다.
-        #   'lane_center' : 중앙선과 흰선의 중점. 흰선이 프레임을 벗어나면 외삽한
-        #                   가짜 위치에 물려 목표가 통째로 흔들린다.
-        self.declare_parameter('ref_mode', 'center_line')
-        # 중앙선에서 유지할 거리(차선폭 대비 비율). 0.5 면 차선 정중앙.
-        self.declare_parameter('ref_offset_frac', 0.5)
+        # 주행 목표: 노란 중앙선을 화면의 이 위치에 유지한다 (half-width 대비).
+        # 오른쪽 차선을 달리면 중앙선은 내 왼쪽에 보이므로 목표는 화면 중심에서
+        # 왼쪽으로 이만큼. 왼쪽 차선이면 부호만 뒤집는다 -- 차선 변경이
+        # '부호 뒤집기'가 되므로 차선폭을 몰라도 된다.
+        self.declare_parameter('center_target_frac', 0.35)
+
+        # 헤딩(선이 뻗은 각도) 추정용 표본
+        # 화면 기울기(dx/dy)를 정규화 곡률로 바꾸는 배율. 화면 좌표 기반이라
+        # 실제 각도는 아니지만 단조 대응이므로 게인이 흡수한다.
+        self.declare_parameter('heading_scale', 2.0)
+        self.declare_parameter('slope_samples', 6)
+        self.declare_parameter('slope_min_pts', 3)
 
         # 차선 판정 래치. 매 프레임 재판정하면 헤어핀에서 RIGHT/LEFT/UNKNOWN 이
         # 토글하고, 목표 차선이 바뀌면 조향이 계단식으로 점프해 사행이 생긴다.
@@ -99,10 +103,6 @@ class LaneDetectNode(Node):
         # 노란선은 점선이라 대시 사이 공백에서 사라진다. 그동안 마지막 값을 유지한다.
         self.declare_parameter('yellow_hold_s', 0.8)
 
-        # 차선 폭 초기 추정(화면 폭 대비 비율). 한쪽 흰선이 화면 밖일 때 외삽에 쓴다.
-        # 흰선+노란선이 동시에 보일 때마다 실측값으로 갱신된다.
-        self.declare_parameter('lane_width_frac_init', 0.42)
-
         # 카메라 광축과 차량 중심선의 픽셀 오프셋. 실차 인수 후 직진 주행으로 실측.
         self.declare_parameter('cam_center_offset_px', 0.0)
 
@@ -123,8 +123,10 @@ class LaneDetectNode(Node):
 
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
-        self.ref_mode = str(p('ref_mode').value)
-        self.ref_offset_frac = float(p('ref_offset_frac').value)
+        self.center_target_frac = float(p('center_target_frac').value)
+        self.heading_scale = float(p('heading_scale').value)
+        self.slope_samples = int(p('slope_samples').value)
+        self.slope_min_pts = int(p('slope_min_pts').value)
         self.band_autotrack = bool(p('band_autotrack').value)
         self.band_track_gain = float(p('band_track_gain').value)
         self.lane_switch_hysteresis = float(p('lane_switch_hysteresis').value)
@@ -141,7 +143,6 @@ class LaneDetectNode(Node):
         self.peak_win_px = int(p('peak_win_px').value)
         self.yellow_inset_px = int(p('yellow_inset_px').value)
         self.yellow_hold_s = float(p('yellow_hold_s').value)
-        self.lane_width_frac = float(p('lane_width_frac_init').value)
         self.cam_center_offset_px = float(p('cam_center_offset_px').value)
         self.publish_debug = bool(p('publish_debug').value)
         self.debug_probe = bool(p('debug_probe').value)
@@ -160,8 +161,6 @@ class LaneDetectNode(Node):
         # 상태: 점선 홀드 + 차선폭 추정
         self._yellow_x = None
         self._yellow_stamp = 0.0
-        self._lane_w = None  # px, 첫 프레임에서 초기화
-        self._lane_w_seen = False    # 첫 실측을 받았는가
         self._band_frac = None       # 밴드 추종 현재 위치 (ROI 비율). None이면 파라미터값
         self._lane_latch = LANE_UNKNOWN   # 래치된 차선 판정
 
@@ -233,6 +232,42 @@ class LaneDetectNode(Node):
             return float(lo + i)
         centroid = float((wgt * np.arange(a, b)).sum() / total)
         return float(lo + centroid)
+
+    def _sample_line(self, mask, lo, hi, rh):
+        """여러 높이에서 선의 x 를 뽑는다. -> [(y, x), ...]
+
+        밴드 하나만 보면 '선이 지금 어디 있나'만 알 수 있다. 여러 높이를 보면
+        '선이 어느 방향으로 뻗어 있나'까지 나온다. 그게 헤딩 오차이고,
+        커브에서는 횡오차보다 먼저 나타나므로 미리 꺾을 수 있다.
+        """
+        pts = []
+        n = max(2, self.slope_samples)
+        band = max(2, rh // (n * 2))
+        for i in range(n):
+            # 아래(가까운 곳)부터 위(먼 곳)로
+            y = int(rh - 1 - (i + 0.5) * (rh / float(n)))
+            y0 = max(0, y - band // 2)
+            y1 = min(rh, y0 + band)
+            prof = self._profile(mask, y0, y1)
+            x = self._peak(prof, lo, hi)
+            if x is not None:
+                pts.append((float(y), x))
+        return pts
+
+    def _slope(self, pts):
+        """표본점들의 dx/dy 를 최소제곱으로. 점이 모자라면 None.
+
+        화면 좌표라 실제 각도는 아니지만 단조 대응이므로 제어 게인이 흡수한다.
+        y 는 아래로 갈수록 크다 -> dx/dy 가 양수면 아래로 갈수록 오른쪽,
+        즉 선이 위쪽에서 왼쪽으로 꺾인다(좌커브).
+        """
+        if len(pts) < self.slope_min_pts:
+            return None
+        ys = np.array([p[0] for p in pts], dtype=np.float64)
+        xs = np.array([p[1] for p in pts], dtype=np.float64)
+        if np.ptp(ys) < 1e-6:
+            return None
+        return float(np.polyfit(ys, xs, 1)[0])
 
     # ------------------------------------------------------------------ 진단
 
@@ -440,9 +475,6 @@ class LaneDetectNode(Node):
             self.pub_valid.publish(Bool(data=False))
             return
 
-        if self._lane_w is None:
-            self._lane_w = self.lane_width_frac * w
-
         if self.debug_probe:
             self._probe(roi, h, int(h * self.roi_top_frac))
 
@@ -487,95 +519,66 @@ class LaneDetectNode(Node):
             return
 
         # 차선폭 추정 갱신: 노란선과 흰선이 함께 보일 때만
+        # ---- 노란선 홀드가 만료됐을 때 ----
+        # 차선폭 학습을 없앴으므로 흰선에서 중앙선을 복원하지 않는다.
+        # 대신 마지막 위치를 그대로 쓰고(홀드), 그마저 없으면 횡오차를 포기하고
+        # 헤딩만으로 간다. 측정값 하나로 목표를 만드는 게 요점이다.
+
+        # ---- 차선 판정 래치 ----
+        # 중앙선을 '확실히' 넘었을 때만 전환한다. 매 프레임 부호만 보면
+        # 중앙선 근처에서 RIGHT/LEFT 가 떨리고 목표가 계단식으로 점프한다.
         if x_y is not None:
-            meas = None
-            if x_wr is not None and x_wr > x_y:
-                meas = x_wr - x_y
-            elif x_wl is not None and x_y > x_wl:
-                meas = x_y - x_wl
-            if meas is not None:
-                if self._lane_w_seen:
-                    self._lane_w = 0.9 * self._lane_w + 0.1 * meas
-                else:
-                    # 첫 실측은 그대로 받는다. EMA 로 시작하면 임의의 초기 추정값에서
-                    # 수렴하는 데 수십 프레임이 걸리고, center_line 기준은 이 폭에
-                    # 직접 의존하므로 그동안 목표가 어긋난 채 주행하게 된다.
-                    self._lane_w = meas
-                    self._lane_w_seen = True
-
-        lw = self._lane_w
-
-        # 노란선을 놓쳤을 때 UNKNOWN 으로 떨어뜨리지 않고, 래치된 차선과 차선폭으로
-        # 중앙선 위치를 복원한다. 점선 공백이나 헤어핀에서 차선 개념을 잃으면
-        # 목표가 통로 중앙으로 튀면서 조향이 계단식으로 점프한다.
-        if x_y is None and self._lane_latch != LANE_UNKNOWN:
-            if self._lane_latch == LANE_RIGHT and x_wr is not None:
-                x_y = x_wr - lw
-            elif self._lane_latch == LANE_LEFT and x_wl is not None:
-                x_y = x_wl + lw
-
-        # 화면 밖으로 나간 흰선은 노란선 기준으로 외삽
-        if x_y is not None:
-            if x_wr is None:
-                x_wr = x_y + lw
-            if x_wl is None:
-                x_wl = x_y - lw
-
-        # ---- 차선 중심 계산 ----
-        if x_y is not None:
-            if self.ref_mode == 'center_line':
-                # 중앙선에서 일정 거리를 유지한다. 흰선 위치를 전혀 안 쓰므로
-                # 헤어핀에서 흰선이 프레임을 벗어나도 목표가 흔들리지 않는다.
-                # 흰선은 실격 방지(margin)에만 쓰인다.
-                off_px = self.ref_offset_frac * lw
-                center_right = x_y + off_px
-                center_left = x_y - off_px
-            else:
-                center_right = 0.5 * (x_y + x_wr)
-                center_left = 0.5 * (x_wl + x_y)
-
-            # 차선 판정 래치. 중앙선을 '확실히' 넘었을 때만 전환한다.
-            # 매 프레임 부호만 보고 판정하면 중앙선 근처에서 RIGHT/LEFT 가 떨리고,
-            # 목표 차선이 바뀔 때마다 오차가 off_right <-> off_left 로 점프해
-            # 조향이 계단식으로 튄다. 이게 직선에서도 사행하는 원인이다.
             d = (cx - x_y) / half
             if d > self.lane_switch_hysteresis:
                 self._lane_latch = LANE_RIGHT
             elif d < -self.lane_switch_hysteresis:
                 self._lane_latch = LANE_LEFT
             elif self._lane_latch == LANE_UNKNOWN:
-                # 아직 한 번도 못 정했으면 불감대 안에서도 일단 정한다
                 self._lane_latch = LANE_RIGHT if d >= 0 else LANE_LEFT
-            current = self._lane_latch
-        else:
-            # 노란선 미검출(긴 대시 공백 / 급커브): 두 흰선 사이를 하나의 통로로 본다.
-            # 차선 구분은 포기하되 '흰선 안쪽 유지'라는 안전 목표는 지킨다.
-            if x_wl is None:
-                x_wl = x_wr - 2.0 * lw
-            if x_wr is None:
-                x_wr = x_wl + 2.0 * lw
-            corridor = 0.5 * (x_wl + x_wr)
-            center_right = center_left = corridor
-            current = LANE_UNKNOWN
+        current = self._lane_latch
 
-        off_r = (cx - center_right) / half
-        off_l = (cx - center_left) / half
+        # ---- 목표: 중앙선을 화면의 정해진 위치에 둔다 ----
+        # 오른쪽 차선을 달리면 중앙선은 내 왼쪽에 보인다 -> 목표는 중심에서 왼쪽.
+        # 왼쪽 차선이면 부호만 뒤집는다. 차선 변경 = 부호 뒤집기이므로
+        # 차선폭을 몰라도 된다.
+        tgt_px = self.center_target_frac * half
+        target_right = cx - tgt_px      # 오른쪽 차선 주행 시 중앙선이 있어야 할 곳
+        target_left = cx + tgt_px       # 왼쪽 차선 주행 시
+
+        if x_y is not None:
+            # + = 중앙선이 목표보다 오른쪽 = 차가 너무 왼쪽에 있다
+            off_r = (x_y - target_right) / half
+            off_l = (x_y - target_left) / half
+        else:
+            # 중앙선을 못 보면 횡오차는 0으로 두고 헤딩만으로 간다.
+            # 없는 값을 흰선에서 지어내면 그 오차가 그대로 조향에 들어간다.
+            off_r = off_l = 0.0
 
         # ---- 흰선 여유 ----
-        # 부호 있는 값으로 낸다: 양수 = 아직 안쪽, 음수 = 이미 흰선을 넘음(실격 상태).
-        # 어느 차선에 있든 가장 가까운 흰선이 곧 바깥 경계이므로, judgment는
-        # 두 값 중 작은 쪽을 위험도로, 그 쪽 방향을 밀어낼 방향으로 쓴다.
-        margin_l = (cx - x_wl) / half
-        margin_r = (x_wr - cx) / half
+        # 부호 있는 값: 양수 = 아직 안쪽, 음수 = 이미 넘음(실격 상태).
+        # 안 보이는 흰선은 '멀다'로 둔다. 차선폭으로 외삽하면 그 오차가 그대로
+        # 실격 방지 조향에 들어가는데, 안 보이는 선은 대개 실제로도 멀다.
+        margin_l = (cx - x_wl) / half if x_wl is not None else 2.0
+        margin_r = (x_wr - cx) / half if x_wr is not None else 2.0
 
-        # ---- 곡률 ----
-        # 근거리/원거리 밴드의 통로 중심 x 차이를 정규화. + 면 우커브.
-        fx_l = self._peak(far_w, 0, cx)
-        fx_r = self._peak(far_w, cx, w)
-        if fx_l is not None and fx_r is not None:
-            far_center = 0.5 * (fx_l + fx_r)
-            near_center = 0.5 * (x_wl + x_wr)
-            curvature = float(np.clip((far_center - near_center) / half, -1.0, 1.0))
+        # ---- 헤딩 (선이 뻗은 각도) ----
+        # 여러 높이에서 흰 실선의 x 를 뽑아 기울기를 낸다. 이게 차량과 차선의
+        # 방향 차이이고, 커브에서는 횡오차보다 '먼저' 나타나므로 미리 꺾을 수 있다.
+        # 밴드 두 개의 중심 차이로 곡률을 흉내내던 예전 방식보다 직접적이다.
+        #
+        # 노란선이 아니라 흰 실선에서 재는 이유: 점선은 표본이 띄엄띄엄해서
+        # 기울기가 불안정하다.
+        slopes = []
+        for lo, hi in ((0, cx), (cx, w)):
+            sl = self._slope(self._sample_line(white, lo, hi, rh))
+            if sl is not None:
+                slopes.append(sl)
+        if slopes:
+            # 화면 y 는 아래로 갈수록 크다. dx/dy 가 양수면 아래로 갈수록 오른쪽,
+            # 즉 선이 위에서 왼쪽으로 꺾인다 -> 좌커브. 부호를 뒤집어
+            # '+ = 우커브' 규약(기존 curvature 와 동일)에 맞춘다.
+            heading = -float(np.mean(slopes)) * self.heading_scale
+            curvature = float(np.clip(heading, -1.0, 1.0))
         else:
             curvature = 0.0
 

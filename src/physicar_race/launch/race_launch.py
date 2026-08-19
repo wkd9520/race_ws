@@ -80,11 +80,13 @@ def generate_launch_description():
         DeclareLaunchArgument('lane_yellow_s_min', default_value='90'),
         DeclareLaunchArgument('lane_yellow_v_min', default_value='90'),
         DeclareLaunchArgument('lane_min_peak_px', default_value='8'),
-        # 주행 기준선. 'center_line' 은 중앙선에서 일정 거리를 유지한다 --
-        # 흰선 위치를 안 쓰므로 헤어핀에서 흰선이 프레임을 벗어나도 목표가
-        # 흔들리지 않는다. 'lane_center' 는 예전 방식(중앙선과 흰선의 중점).
-        DeclareLaunchArgument('lane_ref_mode', default_value='center_line'),
-        DeclareLaunchArgument('lane_ref_offset_frac', default_value='0.5'),
+        # 주행 목표: 노란 중앙선을 화면 중심에서 이만큼 떨어진 곳에 유지한다.
+        # 오른쪽 차선이면 왼쪽으로, 왼쪽 차선이면 오른쪽으로 (부호 반전).
+        # 차선폭을 몰라도 되므로 학습이 필요 없다.
+        DeclareLaunchArgument('lane_center_target_frac', default_value='0.35'),
+        # 헤딩(흰선 기울기)을 정규화 곡률로 바꾸는 배율
+        DeclareLaunchArgument('lane_heading_scale', default_value='2.0'),
+        DeclareLaunchArgument('lane_slope_samples', default_value='6'),
         DeclareLaunchArgument('lane_switch_hysteresis', default_value='0.08'),
         DeclareLaunchArgument('band_autotrack', default_value='true'),
         # 실제로 선을 찾는 '근거리 밴드'의 ROI 내 위치/높이.
@@ -131,8 +133,9 @@ def generate_launch_description():
             'yellow_s_min': _int('lane_yellow_s_min'),
             'yellow_v_min': _int('lane_yellow_v_min'),
             'min_peak_px': _int('lane_min_peak_px'),
-            'ref_mode': LaunchConfiguration('lane_ref_mode'),
-            'ref_offset_frac': _float('lane_ref_offset_frac'),
+            'center_target_frac': _float('lane_center_target_frac'),
+            'heading_scale': _float('lane_heading_scale'),
+            'slope_samples': _int('lane_slope_samples'),
             'lane_switch_hysteresis': _float('lane_switch_hysteresis'),
             'band_autotrack': _bool('band_autotrack'),
             'near_band_frac': _float('lane_near_band_frac'),
