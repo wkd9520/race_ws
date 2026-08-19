@@ -243,20 +243,53 @@ class LaneDetectNode(Node):
         y_lo = (roi_y0 + ny0) / full_h
         y_hi = (roi_y0 + ny0 + bh) / full_h
 
+        found = []
+
         def side(lo, hi, label):
             lo, hi = max(0, int(lo)), min(w, int(hi))
             if hi - lo <= 0:
+                found.append(False)
                 return '%s: 구간 없음' % label
             seg = prof[lo:hi]
             i = int(np.argmax(seg))
             peak = float(seg[i])
             ok = peak >= self.min_peak_px
+            found.append(ok)
             return ('%s: 최대 %d px @ x=%.2f  -> %s'
                     % (label, int(peak), (lo + i) / w,
                        '검출' if ok else '미달(min_peak_px=%d)' % self.min_peak_px))
 
-        return ('  %s 밴드 y %.2f~%.2f | %s | %s'
+        text = ('  %s 밴드 y %.2f~%.2f | %s | %s'
                 % (name, y_lo, y_hi, side(0, cx, '좌'), side(cx, w, '우')))
+        return text, any(found)
+
+    def _advise(self, hsv, strict_white, rh, ny0, bh, band_ok):
+        """왜 안 잡히는지 판정하고, 고칠 명령을 그대로 만들어 준다.
+
+        로그를 사람이 읽고 해석해서 파라미터를 고르는 왕복이 느리다.
+        흰선이 ROI 안 어디에 있는지는 노드가 이미 알고 있으므로,
+        밴드를 거기로 옮기는 값을 직접 계산해서 출력한다.
+        """
+        if band_ok:
+            return '  진단: 판정 밴드에서 흰선 검출됨. 정상.'
+
+        blobs = self._blobs(hsv, strict_white)
+        if not blobs:
+            return ('  진단: 현재 임계값으로는 ROI 어디에서도 흰선이 안 잡힌다.\n'
+                    '        색 문제다. hsv_tuner_launch.py 로 흰선 기준부터 맞출 것.')
+
+        # 현재 임계값을 통과한 덩어리들이 ROI 안에서 차지하는 세로 위치
+        ys = sorted(cy for _a, _h, _s, _v, (_cx, cy) in blobs)
+        lo_y, hi_y = ys[0], ys[-1]
+        span = max(hi_y - lo_y, rh * 0.15)          # 너무 얇으면 최소 폭 확보
+        start = max(0.0, (lo_y - rh * 0.05) / rh)
+        height = min(1.0 - start, (span + rh * 0.10) / rh)
+
+        return ('  진단: 흰선은 ROI 세로 %.2f~%.2f 위치에 있는데 '
+                '판정 밴드는 %.2f~%.2f 를 보고 있다. 색이 아니라 위치 문제다.\n'
+                '  권장: lane_near_band_frac:=%.2f lane_band_height_frac:=%.2f'
+                % (lo_y / rh, hi_y / rh, ny0 / rh, (ny0 + bh) / rh,
+                   round(start, 2), round(height, 2)))
 
     def _probe(self, roi, full_h, roi_y0):
         """흰선/노란선이 안 잡히는 이유를 실측값으로 짚어준다.
@@ -311,13 +344,19 @@ class LaneDetectNode(Node):
         bh = max(2, int(rh * self.band_height_frac))
         ny0 = max(0, min(rh - bh, int(rh * self.near_band_frac)))
 
+        band_w_text, band_w_ok = self._band_report(
+            strict_w, '흰선', ny0, bh, full_h, roi_y0)
+        band_y_text, _ = self._band_report(
+            strict_y, '노란선', ny0, bh, full_h, roi_y0)
+        advice = self._advise(hsv, strict_w, rh, ny0, bh, band_w_ok)
+
         self.get_logger().info(
             '[lane probe] 현재 기준: 흰선 S<=%d V>=%d / 노란선 H %d~%d S>=%d V>=%d, '
             'min_peak_px=%d, ROI 위 %.2f 잘라냄\n'
             '[lane probe] ROI 전체 중앙값(=노면 추정): H=%d S=%d V=%d\n'
             '[lane probe] 흰선 후보 (S<=%d, V>=%d):\n%s\n'
             '[lane probe] 노란선 후보 (H %d~%d, S>=%d, V>=%d):\n%s\n'
-            '[lane probe] 판정 밴드 (여기서 못 찾으면 valid=False):\n%s\n%s'
+            '[lane probe] 판정 밴드 (여기서 못 찾으면 valid=False):\n%s\n%s\n%s'
             % (self.white_s_max, self.white_v_min,
                self.yellow_h_min, self.yellow_h_max,
                self.yellow_s_min, self.yellow_v_min,
@@ -328,8 +367,7 @@ class LaneDetectNode(Node):
                self.probe_yellow_h_min, self.probe_yellow_h_max,
                self.probe_yellow_s_min, self.probe_yellow_v_min,
                '\n'.join(fmt(self._blobs(hsv, yellow), 'yellow')),
-               self._band_report(strict_w, '흰선', ny0, bh, full_h, roi_y0),
-               self._band_report(strict_y, '노란선', ny0, bh, full_h, roi_y0)))
+               band_w_text, band_y_text, advice))
 
     # ------------------------------------------------------------- 메인 콜백
 

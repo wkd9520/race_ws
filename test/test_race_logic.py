@@ -2,6 +2,7 @@
 import importlib.util
 import math
 import os
+import re
 import sys
 
 import cv2
@@ -175,6 +176,48 @@ check('H 흰선 사이에서만 찾아 중앙선을 맞춤',
 check('H 차선 판정 정상 (중심 320 > 중앙선 280 -> RIGHT)',
       ln4.last('lane/current_lane') == lane_mod.LANE_RIGHT,
       '(=%s)' % ln4.last('lane/current_lane'))
+
+
+# I. 자동 진단이 실제로 문제를 푸는가.
+#    "권장: ..." 을 그대로 적용했을 때 valid 가 True 로 바뀌지 않으면
+#    조언이 틀린 것이고, 그건 진단이 없느니만 못하다.
+far_lines = np.full((H, W, 3), 60, np.uint8)
+far_lines[:380, 18:26] = (255, 255, 255)      # 흰선이 밴드보다 위(먼 곳)에만
+far_lines[:380, 476:484] = (255, 255, 255)
+
+ln5 = lane_mod.LaneDetectNode()
+ln5.debug_probe = True
+ln5._probe_stamp = 0.0
+feed(ln5, far_lines)
+check('I 밴드 밖이면 valid=False', ln5.last('lane/valid') is False)
+
+adv = [m for lvl, m in ln5._logger.lines if '권장' in m]
+check('I 위치 문제로 진단', bool(adv) and '위치 문제' in adv[-1])
+
+rec = re.search(r'lane_near_band_frac:=([\d.]+) lane_band_height_frac:=([\d.]+)',
+                adv[-1]) if adv else None
+check('I 권장값을 명령 형태로 제시', rec is not None,
+      '(near=%s height=%s)' % (rec.group(1), rec.group(2)) if rec else '')
+
+if rec:
+    ln6 = lane_mod.LaneDetectNode()
+    ln6.near_band_frac = float(rec.group(1))
+    ln6.band_height_frac = float(rec.group(2))
+    feed(ln6, far_lines)
+    check('I 권장값 적용하면 실제로 검출됨', ln6.last('lane/valid') is True,
+          '(=%s)' % ln6.last('lane/valid'))
+
+# 색 자체가 안 맞는 경우는 위치 조언을 하면 안 된다
+dark = np.full((H, W, 3), 60, np.uint8)
+dark[:, 18:26] = (150, 150, 150)
+dark[:, 476:484] = (150, 150, 150)
+ln7 = lane_mod.LaneDetectNode()
+ln7.debug_probe = True
+ln7._probe_stamp = 0.0
+feed(ln7, dark)
+adv7 = [m for lvl, m in ln7._logger.lines if '진단' in m]
+check('I 색 문제일 땐 튜너를 안내', bool(adv7) and 'hsv_tuner' in adv7[-1])
+check('  위치 조언은 하지 않음', bool(adv7) and '권장: lane_near' not in adv7[-1])
 
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')
