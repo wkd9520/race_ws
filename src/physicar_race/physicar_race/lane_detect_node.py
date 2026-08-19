@@ -58,6 +58,15 @@ class LaneDetectNode(Node):
         self.declare_parameter('band_autotrack', True)
         self.declare_parameter('band_track_gain', 0.25)   # 밴드 이동 속도 (0~1)
 
+        # 주행 기준선을 무엇으로 잡을지.
+        #   'center_line' : 중앙선에서 일정 거리를 유지한다. 중앙선은 화면 한가운데라
+        #                   헤어핀에서도 계속 보이므로 목표가 안정적이다.
+        #   'lane_center' : 중앙선과 흰선의 중점. 흰선이 프레임을 벗어나면 외삽한
+        #                   가짜 위치에 물려 목표가 통째로 흔들린다.
+        self.declare_parameter('ref_mode', 'center_line')
+        # 중앙선에서 유지할 거리(차선폭 대비 비율). 0.5 면 차선 정중앙.
+        self.declare_parameter('ref_offset_frac', 0.5)
+
         # 차선 판정 래치. 매 프레임 재판정하면 헤어핀에서 RIGHT/LEFT/UNKNOWN 이
         # 토글하고, 목표 차선이 바뀌면 조향이 계단식으로 점프해 사행이 생긴다.
         # 중앙선을 '확실히' 넘었을 때만 전환한다.
@@ -114,6 +123,8 @@ class LaneDetectNode(Node):
 
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
+        self.ref_mode = str(p('ref_mode').value)
+        self.ref_offset_frac = float(p('ref_offset_frac').value)
         self.band_autotrack = bool(p('band_autotrack').value)
         self.band_track_gain = float(p('band_track_gain').value)
         self.lane_switch_hysteresis = float(p('lane_switch_hysteresis').value)
@@ -150,6 +161,7 @@ class LaneDetectNode(Node):
         self._yellow_x = None
         self._yellow_stamp = 0.0
         self._lane_w = None  # px, 첫 프레임에서 초기화
+        self._lane_w_seen = False    # 첫 실측을 받았는가
         self._band_frac = None       # 밴드 추종 현재 위치 (ROI 비율). None이면 파라미터값
         self._lane_latch = LANE_UNKNOWN   # 래치된 차선 판정
 
@@ -476,10 +488,20 @@ class LaneDetectNode(Node):
 
         # 차선폭 추정 갱신: 노란선과 흰선이 함께 보일 때만
         if x_y is not None:
+            meas = None
             if x_wr is not None and x_wr > x_y:
-                self._lane_w = 0.9 * self._lane_w + 0.1 * (x_wr - x_y)
+                meas = x_wr - x_y
             elif x_wl is not None and x_y > x_wl:
-                self._lane_w = 0.9 * self._lane_w + 0.1 * (x_y - x_wl)
+                meas = x_y - x_wl
+            if meas is not None:
+                if self._lane_w_seen:
+                    self._lane_w = 0.9 * self._lane_w + 0.1 * meas
+                else:
+                    # 첫 실측은 그대로 받는다. EMA 로 시작하면 임의의 초기 추정값에서
+                    # 수렴하는 데 수십 프레임이 걸리고, center_line 기준은 이 폭에
+                    # 직접 의존하므로 그동안 목표가 어긋난 채 주행하게 된다.
+                    self._lane_w = meas
+                    self._lane_w_seen = True
 
         lw = self._lane_w
 
@@ -501,8 +523,16 @@ class LaneDetectNode(Node):
 
         # ---- 차선 중심 계산 ----
         if x_y is not None:
-            center_right = 0.5 * (x_y + x_wr)
-            center_left = 0.5 * (x_wl + x_y)
+            if self.ref_mode == 'center_line':
+                # 중앙선에서 일정 거리를 유지한다. 흰선 위치를 전혀 안 쓰므로
+                # 헤어핀에서 흰선이 프레임을 벗어나도 목표가 흔들리지 않는다.
+                # 흰선은 실격 방지(margin)에만 쓰인다.
+                off_px = self.ref_offset_frac * lw
+                center_right = x_y + off_px
+                center_left = x_y - off_px
+            else:
+                center_right = 0.5 * (x_y + x_wr)
+                center_left = 0.5 * (x_wl + x_y)
 
             # 차선 판정 래치. 중앙선을 '확실히' 넘었을 때만 전환한다.
             # 매 프레임 부호만 보고 판정하면 중앙선 근처에서 RIGHT/LEFT 가 떨리고,

@@ -84,11 +84,15 @@ check('A margin_right≈0.5', abs(ln.last('lane/margin_right') - 0.5) < 0.05,
       '(=%.3f)' % ln.last('lane/margin_right'))
 
 # B. 우측 흰선으로 치우침 (우측 흰선 400 -> 차선중심 280, 화면중심 320 -> +0.125)
-feed(ln, road(white_left=20, white_right=400, yellow=160))
-check('B offset_right>0 (중심보다 우측)', ln.last('lane/offset_right') > 0.08,
-      '(=%.3f)' % ln.last('lane/offset_right'))
-check('B margin_right≈0.25', abs(ln.last('lane/margin_right') - 0.25) < 0.05,
-      '(=%.3f)' % ln.last('lane/margin_right'))
+# 장면마다 차선폭이 달라서 새 노드를 쓴다. center_line 기준은 차선폭 추정에
+# 의존하는데, 앞 장면(폭 320)의 값이 EMA 로 남아 있으면 목표가 어긋난다.
+# 실제 트랙은 폭이 일정하므로 이건 테스트 장면 특유의 문제다.
+lnB = lane_mod.LaneDetectNode()
+feed(lnB, road(white_left=20, white_right=400, yellow=160))
+check('B offset_right>0 (중심보다 우측)', lnB.last('lane/offset_right') > 0.08,
+      '(=%.3f)' % lnB.last('lane/offset_right'))
+check('B margin_right≈0.25', abs(lnB.last('lane/margin_right') - 0.25) < 0.05,
+      '(=%.3f)' % lnB.last('lane/margin_right'))
 
 # C. 왼쪽 차선 (노란선 480, 좌측 흰선 160 -> 차선중심 320)
 feed(ln, road(white_left=160, white_right=None, yellow=480))
