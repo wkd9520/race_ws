@@ -4,6 +4,7 @@ import math
 import os
 import sys
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -130,6 +131,50 @@ white_sec = (lp[-1].split('흰선 후보')[-1].split('노란선 후보')[0]) if 
 check('G probe 가 그 흰선을 후보로 찾아냄', 'V=150' in white_sec,
       '(%s)' % white_sec.strip().split('\n')[0].strip())
 check('G probe 가 V 부족을 사유로 지목', 'V 150<180' in white_sec)
+
+
+# H. 시뮬레이터 실측 상황. 흰선 바깥 갓길이 흙색이라 노란색 임계에 걸리는데,
+#    그 면적이 중앙 점선보다 훨씬 크다. 화면 전체에서 최대 피크를 잡으면
+#    중앙선 위치가 갓길로 잡혀 차선 구조가 통째로 어긋난다.
+#    노란선은 두 흰선 '사이'에서만 찾아야 한다.
+def road_with_shoulder():
+    """HSV 로 직접 만든다 -- 갓길 색(H=30 S=132 V=161)을 실측값에 맞추려고."""
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:, :] = (110, 90, 70)                 # 어두운 푸른 노면
+    hsv[:, :100] = (30, 132, 161)             # 좌측 갓길 (흙색, 면적 큼)
+    hsv[:, 540:] = (30, 132, 161)             # 우측 갓길
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    bgr[:, 96:104] = (255, 255, 255)          # 좌 흰선
+    bgr[:, 536:544] = (255, 255, 255)         # 우 흰선
+    dash = cv2.cvtColor(np.uint8([[(20, 255, 255)]]), cv2.COLOR_HSV2BGR)[0][0]
+    for y in range(0, H, 60):                 # 중앙 주황 점선 (면적 작음)
+        bgr[y:min(H, y + 30), 276:284] = dash
+    return bgr
+
+
+img_h = road_with_shoulder()
+ln4 = lane_mod.LaneDetectNode()
+feed(ln4, img_h)
+
+# 갓길이 실제로 노란 마스크를 오염시키는지 먼저 확인 (안 그러면 테스트가 무의미)
+roi_h = img_h[int(H * ln4.roi_top_frac):, :]
+_, ymask = ln4._masks(roi_h)
+rh_h = roi_h.shape[0]
+bh_h = max(2, int(rh_h * ln4.band_height_frac))
+ny_h = max(0, min(rh_h - bh_h, int(rh_h * ln4.near_band_frac)))
+prof_h = ln4._profile(ymask, ny_h, ny_h + bh_h)
+naive = ln4._peak(prof_h, 0, W)
+check('H 갓길이 노란 마스크를 오염시킴 (전제 확인)',
+      naive is not None and (naive < 150 or naive > 490),
+      '(전체탐색 피크 x=%s -> 갓길)' % (None if naive is None else round(naive)))
+
+check('H 흰선 사이에서만 찾아 중앙선을 맞춤',
+      ln4._yellow_x is not None and abs(ln4._yellow_x - 280) < 20,
+      '(x=%s, 기대 280)' % (None if ln4._yellow_x is None
+                            else round(ln4._yellow_x)))
+check('H 차선 판정 정상 (중심 320 > 중앙선 280 -> RIGHT)',
+      ln4.last('lane/current_lane') == lane_mod.LANE_RIGHT,
+      '(=%s)' % ln4.last('lane/current_lane'))
 
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')

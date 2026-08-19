@@ -72,6 +72,10 @@ class LaneDetectNode(Node):
         # 피크 무게중심을 구할 창의 반폭(px). 화면상 선 두께보다 넉넉하게.
         self.declare_parameter('peak_win_px', 12)
 
+        # 노란선을 찾을 때 흰선 안쪽으로 얼마나 들어가서 볼지(px).
+        # 흰선 자체의 두께와 그 바깥 갓길이 노란 마스크에 걸리는 걸 배제한다.
+        self.declare_parameter('yellow_inset_px', 12)
+
         # 노란선은 점선이라 대시 사이 공백에서 사라진다. 그동안 마지막 값을 유지한다.
         self.declare_parameter('yellow_hold_s', 0.8)
 
@@ -110,6 +114,7 @@ class LaneDetectNode(Node):
         self.yellow_v_min = int(p('yellow_v_min').value)
         self.min_peak_px = int(p('min_peak_px').value)
         self.peak_win_px = int(p('peak_win_px').value)
+        self.yellow_inset_px = int(p('yellow_inset_px').value)
         self.yellow_hold_s = float(p('yellow_hold_s').value)
         self.lane_width_frac = float(p('lane_width_frac_init').value)
         self.cam_center_offset_px = float(p('cam_center_offset_px').value)
@@ -366,8 +371,16 @@ class LaneDetectNode(Node):
         x_wl = self._peak(near_w, 0, cx)
         x_wr = self._peak(near_w, cx, w)
 
-        # 노란 점선: 화면 전체에서 최대 피크. 대시 공백 동안은 홀드.
-        x_y = self._peak(near_y, 0, w)
+        # 노란 점선: 반드시 두 흰선 '사이'에서만 찾는다.
+        #
+        # 화면 전체에서 최대 피크를 잡으면 안 된다. 흰선 바깥 갓길이 흙색/황토색이면
+        # 노란색 임계에 걸리는데, 그 면적이 중앙 점선보다 훨씬 커서 피크를 가져간다.
+        # 그러면 중앙선 위치가 갓길로 잡히고 차선 구조가 통째로 어긋난다.
+        # HSV 로는 갓길과 주황 점선을 못 가르지만(색상이 겹친다), 기하로는 확실하다 --
+        # 중앙선은 정의상 두 경계선 안쪽에만 존재한다.
+        y_lo = (x_wl + self.yellow_inset_px) if x_wl is not None else 0
+        y_hi = (x_wr - self.yellow_inset_px) if x_wr is not None else w
+        x_y = self._peak(near_y, y_lo, y_hi) if y_hi > y_lo else None
         now = time.time()
         if x_y is not None:
             self._yellow_x, self._yellow_stamp = x_y, now
