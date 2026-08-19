@@ -27,6 +27,7 @@ setup(
             'hsv_tuner_node = physicar_race.hsv_tuner_node:main',
             'traffic_light_node = physicar_race.traffic_light_node:main',
             'lane_obstacle_node = physicar_race.lane_obstacle_node:main',
+            'cone_detect_node = physicar_race.cone_detect_node:main',
             'race_judgment_node = physicar_race.race_judgment_node:main',
         ],
     },

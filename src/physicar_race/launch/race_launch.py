@@ -54,6 +54,9 @@ def generate_launch_description():
         # 이 경우 출발 게이트를 열 방법이 없으므로 require_green 은 자동으로 무시된다.
         DeclareLaunchArgument('use_traffic_light', default_value='true'),
 
+        # 콘 감지 노드(카메라 초록 + 라이다 거리 융합). 콘 없는 맵이면 false.
+        DeclareLaunchArgument('use_cone_detect', default_value='true'),
+
         # 8/18 공개된 코스 규격의 실제 차선 폭으로 교체할 것. 기본값은 추정치다.
         DeclareLaunchArgument('lane_width_m', default_value='0.50'),
 
@@ -160,6 +163,17 @@ def generate_launch_description():
         remappings=[('scan', scan_topic)],
     )
 
+    cone = Node(
+        package=PKG, executable='cone_detect_node', name='cone_detect_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('use_cone_detect')),
+        parameters=[{
+            'publish_debug': _bool('publish_debug'),
+            'front_offset_deg': _float('front_offset_deg'),
+        }],
+        remappings=[('image_raw', image_topic), ('scan', scan_topic)],
+    )
+
     def judgment(context, *_a, **_kw):
         """신호등 노드를 안 띄우면 require_green 은 성립할 수 없다.
 
@@ -187,4 +201,5 @@ def generate_launch_description():
         return out
 
     return LaunchDescription(
-        args + [lane_detect, traffic_light, obstacle, OpaqueFunction(function=judgment)])
+        args + [lane_detect, traffic_light, obstacle, cone,
+                OpaqueFunction(function=judgment)])
