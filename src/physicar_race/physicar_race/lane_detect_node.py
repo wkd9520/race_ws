@@ -52,6 +52,17 @@ class LaneDetectNode(Node):
         # 화면 위쪽은 하늘/관중석이라 버린다. 실차 카메라는 FOV 98도, 480x360이라
         # 연습 카메라(ELP 1280x720)와 화각이 달라 이 값 재조정 필요.
         self.declare_parameter('roi_top_frac', 0.55)
+        # 밴드를 흰선이 실제로 있는 세로 위치로 따라가게 한다. 헤어핀에서는 선이
+        # 프레임을 드나들어 고정 밴드가 빈 노면이나 차체를 보게 되는데, 그러면
+        # 색이 맞아도 valid=False 로 떨어져 차가 선다.
+        self.declare_parameter('band_autotrack', True)
+        self.declare_parameter('band_track_gain', 0.25)   # 밴드 이동 속도 (0~1)
+
+        # 차선 판정 래치. 매 프레임 재판정하면 헤어핀에서 RIGHT/LEFT/UNKNOWN 이
+        # 토글하고, 목표 차선이 바뀌면 조향이 계단식으로 점프해 사행이 생긴다.
+        # 중앙선을 '확실히' 넘었을 때만 전환한다.
+        self.declare_parameter('lane_switch_hysteresis', 0.08)  # half-width 대비
+
         self.declare_parameter('near_band_frac', 0.70)   # ROI 내 근거리 밴드 시작점
         self.declare_parameter('far_band_frac', 0.10)    # ROI 내 원거리 밴드 시작점
         self.declare_parameter('band_height_frac', 0.25)
@@ -103,6 +114,9 @@ class LaneDetectNode(Node):
 
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
+        self.band_autotrack = bool(p('band_autotrack').value)
+        self.band_track_gain = float(p('band_track_gain').value)
+        self.lane_switch_hysteresis = float(p('lane_switch_hysteresis').value)
         self.near_band_frac = float(p('near_band_frac').value)
         self.far_band_frac = float(p('far_band_frac').value)
         self.band_height_frac = float(p('band_height_frac').value)
@@ -136,6 +150,8 @@ class LaneDetectNode(Node):
         self._yellow_x = None
         self._yellow_stamp = 0.0
         self._lane_w = None  # px, 첫 프레임에서 초기화
+        self._band_frac = None       # 밴드 추종 현재 위치 (ROI 비율). None이면 파라미터값
+        self._lane_latch = LANE_UNKNOWN   # 래치된 차선 판정
 
         # lane_follow_node / traffic_light_node 와 같은 규약: 상대 토픽명 'image_raw' 를
         # launch remapping 으로 흡수하고, 센서 QoS(BEST_EFFORT)로 구독한다.
@@ -369,6 +385,32 @@ class LaneDetectNode(Node):
                '\n'.join(fmt(self._blobs(hsv, yellow), 'yellow')),
                band_w_text, band_y_text, advice))
 
+    def _track_band(self, white, rh, bh):
+        """판정 밴드를 흰선이 실제로 있는 세로 위치로 따라가게 한다.
+
+        고정 밴드는 헤어핀에서 무너진다. 선이 프레임을 드나들면 밴드가 빈 노면이나
+        차체를 보게 되고, 색이 맞아도 valid=False 로 떨어져 차가 선다.
+
+        가장 '가까운' 쪽(아래)에서 흰 픽셀이 충분한 행을 찾아 그 바로 위에 밴드를
+        놓는다. 가까울수록 조향 기준으로 정확하기 때문이다. 급변을 막으려고
+        지수평활로 서서히 옮긴다.
+        """
+        if self._band_frac is None:
+            self._band_frac = self.near_band_frac
+        if not self.band_autotrack:
+            return int(rh * self.near_band_frac)
+
+        rows = (white > 0).sum(axis=1)
+        # 한 행에 이 정도는 있어야 선으로 본다. 열 기준(min_peak_px)과 별개.
+        hit = np.flatnonzero(rows >= max(2, self.min_peak_px // 2))
+        if hit.size:
+            # 가장 아래(가까운) 검출 행을 밴드 하단에 맞춘다
+            target = float(hit.max() - bh) / rh
+            target = min(max(target, 0.0), 1.0 - bh / rh)
+            g = min(max(self.band_track_gain, 0.0), 1.0)
+            self._band_frac = (1.0 - g) * self._band_frac + g * target
+        return int(rh * self._band_frac)
+
     # ------------------------------------------------------------- 메인 콜백
 
     def on_image(self, msg: Image):
@@ -395,7 +437,7 @@ class LaneDetectNode(Node):
         white, yellow = self._masks(roi)
 
         bh = max(2, int(rh * self.band_height_frac))
-        ny0 = max(0, min(rh - bh, int(rh * self.near_band_frac)))
+        ny0 = max(0, min(rh - bh, self._track_band(white, rh, bh)))
         fy0 = max(0, min(rh - bh, int(rh * self.far_band_frac)))
 
         near_w = self._profile(white, ny0, ny0 + bh)
@@ -441,6 +483,15 @@ class LaneDetectNode(Node):
 
         lw = self._lane_w
 
+        # 노란선을 놓쳤을 때 UNKNOWN 으로 떨어뜨리지 않고, 래치된 차선과 차선폭으로
+        # 중앙선 위치를 복원한다. 점선 공백이나 헤어핀에서 차선 개념을 잃으면
+        # 목표가 통로 중앙으로 튀면서 조향이 계단식으로 점프한다.
+        if x_y is None and self._lane_latch != LANE_UNKNOWN:
+            if self._lane_latch == LANE_RIGHT and x_wr is not None:
+                x_y = x_wr - lw
+            elif self._lane_latch == LANE_LEFT and x_wl is not None:
+                x_y = x_wl + lw
+
         # 화면 밖으로 나간 흰선은 노란선 기준으로 외삽
         if x_y is not None:
             if x_wr is None:
@@ -452,7 +503,20 @@ class LaneDetectNode(Node):
         if x_y is not None:
             center_right = 0.5 * (x_y + x_wr)
             center_left = 0.5 * (x_wl + x_y)
-            current = LANE_RIGHT if cx >= x_y else LANE_LEFT
+
+            # 차선 판정 래치. 중앙선을 '확실히' 넘었을 때만 전환한다.
+            # 매 프레임 부호만 보고 판정하면 중앙선 근처에서 RIGHT/LEFT 가 떨리고,
+            # 목표 차선이 바뀔 때마다 오차가 off_right <-> off_left 로 점프해
+            # 조향이 계단식으로 튄다. 이게 직선에서도 사행하는 원인이다.
+            d = (cx - x_y) / half
+            if d > self.lane_switch_hysteresis:
+                self._lane_latch = LANE_RIGHT
+            elif d < -self.lane_switch_hysteresis:
+                self._lane_latch = LANE_LEFT
+            elif self._lane_latch == LANE_UNKNOWN:
+                # 아직 한 번도 못 정했으면 불감대 안에서도 일단 정한다
+                self._lane_latch = LANE_RIGHT if d >= 0 else LANE_LEFT
+            current = self._lane_latch
         else:
             # 노란선 미검출(긴 대시 공백 / 급커브): 두 흰선 사이를 하나의 통로로 본다.
             # 차선 구분은 포기하되 '흰선 안쪽 유지'라는 안전 목표는 지킨다.

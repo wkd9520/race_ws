@@ -67,6 +67,20 @@ class RaceJudgmentNode(Node):
         # --- 차선 추종 게인 ---
         self.declare_parameter('kp', 0.55)
         self.declare_parameter('kd', 0.12)
+
+        # --- 곡률 피드포워드 ---
+        # 현재 횡오차에 대한 P 제어만으로는 일정 곡률 구간에서 정상상태 오차가
+        # 남는다. 오차가 생겨야 조향이 나오므로 커브 안쪽을 못 물고 바깥으로
+        # 밀린다. 곡률을 보고 '미리' 꺾어주는 항을 더한다.
+        self.declare_parameter('k_ff', 0.55)
+
+        # --- 선행 감속 ---
+        # 곡률을 원거리에서 읽어 커브 진입 '전에' 줄인다. 지금 곡률만 보고
+        # 반응하면 이미 커브 안이라 늦다.
+        self.declare_parameter('a_lat_max', 1.5)      # 허용 횡가속 [m/s^2]
+        self.declare_parameter('r_min_m', 0.49)       # 조향 한계 회전반경
+        self.declare_parameter('brake_rate', 3.0)     # 감속 추종 속도 [m/s per s]
+        self.declare_parameter('accel_rate', 1.0)     # 가속 복귀 속도 (급가속 금지)
         # 실차에서 반대로 돌면 -1.0으로 플립 (캘리브레이션 체크리스트 항목)
         self.declare_parameter('lane_steer_sign', 1.0)
 
@@ -103,6 +117,12 @@ class RaceJudgmentNode(Node):
         self.control_hz = float(p('control_hz').value)
         self.kp = float(p('kp').value)
         self.kd = float(p('kd').value)
+        self.k_ff = float(p('k_ff').value)
+        self.a_lat_max = float(p('a_lat_max').value)
+        self.r_min_m = float(p('r_min_m').value)
+        self.brake_rate = float(p('brake_rate').value)
+        self.accel_rate = float(p('accel_rate').value)
+        self._v_cmd = 0.0        # 속도 명령 이력 (급가속 억제용)
         self.steer_sign = float(p('lane_steer_sign').value)
         self.margin_crit = float(p('margin_crit').value)
         self.k_white = float(p('k_white').value)
@@ -303,7 +323,9 @@ class RaceJudgmentNode(Node):
         derr = (err - self.prev_err) / dt
         self.prev_err = err
 
-        steer = self.kp * err + self.kd * derr
+        # 곡률 피드포워드: 오차가 생기기 전에 미리 꺾는다.
+        # curvature 는 + 가 우커브인데 조향은 + 가 좌회전이라 부호를 뒤집는다.
+        steer = self.kp * err + self.kd * derr - self.k_ff * self.curvature
 
         # 흰선 실격 방지: 다른 모든 항 위에 얹는 하드 제약
         margin = min(self.margin_l, self.margin_r)
@@ -319,8 +341,12 @@ class RaceJudgmentNode(Node):
         steer = max(-MAX_STEER, min(MAX_STEER, steer))
 
         # ---- 5. 속도 프로파일 ----
-        v = self.v_max
-        v *= max(0.25, 1.0 - self.k_curve * abs(self.curvature))
+        # 곡률에서 안전 속도를 물리로 구한다. 정규화 곡률 1.0 을 최소 회전반경
+        # (조향 한계, 0.49m)에 대응시켜 반경을 추정하고 v = sqrt(a_lat * R).
+        # 곱셈식 감속 계수는 '얼마나 줄여야 안전한가'와 무관한 임의값이었다.
+        curv = min(1.0, abs(self.curvature))
+        r_est = self.r_min_m / max(curv, 1e-3)
+        v = min(self.v_max, math.sqrt(max(0.0, self.a_lat_max * r_est)))
         v *= max(0.35, 1.0 - self.k_offset * min(1.0, abs(off)))
 
         if target != self.current_lane and self.current_lane != LANE_UNKNOWN:
@@ -333,6 +359,14 @@ class RaceJudgmentNode(Node):
             v = min(v, max(MIN_SPEED, self.k_approach * self.nearest))
 
         v = max(MIN_SPEED, min(MAX_SPEED, v))
+
+        # 변화율 제한. 감속은 빠르게 허용하고 가속은 천천히 -- 커브 탈출에서
+        # 급가속하면 다음 커브 진입 속도가 다시 높아져 같은 문제가 반복된다.
+        dv = v - self._v_cmd
+        limit = (self.brake_rate if dv < 0.0 else self.accel_rate) * dt
+        v = self._v_cmd + max(-limit, min(limit, dv))
+        v = max(MIN_SPEED, min(MAX_SPEED, v))
+        self._v_cmd = v
 
         self._publish(v, steer)
 
@@ -373,6 +407,10 @@ class RaceJudgmentNode(Node):
         return cur
 
     def _publish(self, speed, steer):
+        # 정지 경로로 빠졌으면 속도 이력도 0 으로 리셋한다. 안 그러면 재출발할 때
+        # 변화율 제한이 정지 전 속도에서 출발한다고 착각한다.
+        if speed == 0.0:
+            self._v_cmd = 0.0
         self.pub_speed.publish(Float64(data=float(speed)))
         self.pub_steer.publish(Float64(data=float(steer)))
         self.pub_state.publish(String(data=self.state))

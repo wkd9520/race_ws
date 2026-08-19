@@ -4,6 +4,7 @@ import math
 import os
 import re
 import sys
+import time
 
 import cv2
 import numpy as np
@@ -111,9 +112,16 @@ feed(ln2, road(white_left=20, white_right=480, yellow=160))
 check('F 노란선 보임 -> RIGHT', ln2.last('lane/current_lane') == lane_mod.LANE_RIGHT)
 ln2._yellow_stamp -= 10.0  # 홀드 시간 만료 강제
 feed(ln2, road(white_left=20, white_right=480, yellow=None))
-check('F 홀드 만료 -> UNKNOWN', ln2.last('lane/current_lane') == lane_mod.LANE_UNKNOWN,
+# 홀드가 만료돼도 UNKNOWN 으로 떨어뜨리지 않는다. 차선 개념을 잃으면 목표가
+# 통로 중앙으로 튀면서 조향이 계단식으로 점프하기 때문 -- 사행의 원인이다.
+# 대신 래치된 차선과 차선폭으로 중앙선 위치를 복원해 기하를 유지한다.
+check('F 홀드 만료해도 차선 유지 (래치)',
+      ln2.last('lane/current_lane') == lane_mod.LANE_RIGHT,
       '(=%s)' % ln2.last('lane/current_lane'))
-check('F UNKNOWN이어도 valid 유지', ln2.last('lane/valid') is True)
+check('F valid 유지', ln2.last('lane/valid') is True)
+check('F 중앙선 위치를 래치로 복원',
+      ln2._yellow_x is None,  # 홀드는 만료됨
+      '(홀드 만료 상태에서도 기하 유지)')
 
 # G. 실전에서 만난 '차선 인지 유실'. 흰선이 기준보다 어두우면 마스크에 안 걸려
 #    valid=False 가 되고, 판단 노드는 흰선 위치를 모르므로 차를 세운다.
@@ -509,13 +517,28 @@ check('|steer| <= 20deg', abs(st) <= jud_mod.MAX_STEER + 1e-9,
 j6 = new_judge()
 j6.require_green = False
 j6.state = jud_mod.ST_RACING
+
+
+
+def settle(node, ticks=60, dt=1.0 / 30.0):
+    """속도 변화율 제한이 있으므로 정상상태까지 여러 틱 돌린다.
+
+    스텁에서는 연속 호출 간 실제 경과시간이 0에 가까워 dt 가 무의미해진다.
+    실제 30Hz 처럼 보이도록 prev_t 를 뒤로 밀어 준다.
+    """
+    for _ in range(ticks):
+        node.prev_t = time.time() - dt
+        node.clear()
+        node._tick()
+    return node.last('/speed')
+
+
 perceive(j6, lane=jud_mod.LANE_RIGHT, curv=0.0)
 obstacles(j6)
-j6.clear(); j6._tick()
-v_straight = j6.last('/speed')
+v_straight = settle(j6)
 perceive(j6, lane=jud_mod.LANE_RIGHT, curv=0.9)
-j6.clear(); j6._tick()
-v_curve = j6.last('/speed')
+obstacles(j6)
+v_curve = settle(j6)
 check('급커브에서 감속', v_curve < v_straight,
       '(직선 %.2f -> 커브 %.2f)' % (v_straight, v_curve))
 
