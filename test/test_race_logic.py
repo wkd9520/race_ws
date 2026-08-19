@@ -240,6 +240,31 @@ adv7 = [m for lvl, m in ln7._logger.lines if '진단' in m]
 check('I 색 문제일 땐 튜너를 안내', bool(adv7) and 'hsv_tuner' in adv7[-1])
 check('  위치 조언은 하지 않음', bool(adv7) and '권장: lane_near' not in adv7[-1])
 
+# J. 해상도 독립성. 임계값을 640x480 기준 절대 픽셀로 박아두면 240p 카메라에서
+#    같은 선인데도 전부 임계 미달로 떨어진다. 실차 카메라가 240p 라 실제로 겪었다.
+def road_at(W2, H2):
+    img = np.full((H2, W2, 3), 60, np.uint8)
+    t = max(2, W2 // 80)
+    for x0 in (int(W2 * 0.06), int(W2 * 0.75)):
+        img[:, x0 - t:x0 + t] = (255, 255, 255)
+    for y in range(0, H2, H2 // 8):
+        img[y:y + H2 // 14, int(W2 * 0.32) - t:int(W2 * 0.32) + t] = (0, 255, 255)
+    return img
+
+
+offs = {}
+for W2, H2 in ((640, 480), (320, 240), (480, 360)):
+    nj = lane_mod.LaneDetectNode()
+    nj.on_image(ros_stubs.Image(cv=road_at(W2, H2)))
+    check('J %dx%d 검출됨' % (W2, H2), nj.last('lane/valid') is True,
+          '(min_peak=%d win=%d inset=%d)' % (nj.min_peak_px, nj.peak_win_px,
+                                             nj.yellow_inset_px))
+    offs[(W2, H2)] = nj.last('lane/offset_right')
+
+spread = max(offs.values()) - min(offs.values())
+check('J 해상도가 달라도 같은 횡오차', spread < 0.02,
+      '(편차 %.4f, 값 %s)' % (spread, ['%.3f' % v for v in offs.values()]))
+
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')
 tl = tl_mod.TrafficLightNode()

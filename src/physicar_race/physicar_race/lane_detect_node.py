@@ -90,15 +90,22 @@ class LaneDetectNode(Node):
         self.declare_parameter('yellow_s_min', 90)
         self.declare_parameter('yellow_v_min', 90)
 
-        # 열 히스토그램 피크로 인정할 최소 픽셀 수
-        self.declare_parameter('min_peak_px', 8)
+        # 아래 셋은 원래 640x480 기준 절대 픽셀이었는데, 카메라가 240p 면
+        # 같은 선인데도 픽셀 수가 절반으로 나와 전부 임계 미달이 된다.
+        # 해상도에 안 흔들리도록 비율로 잡는다. 0 보다 큰 절대값을 주면
+        # 그 값이 우선한다(예전 방식으로 되돌리고 싶을 때).
+        #
+        # 열 히스토그램 피크로 인정할 최소 픽셀 수 -> 밴드 높이 대비 비율
+        self.declare_parameter('min_peak_frac', 0.15)
+        self.declare_parameter('min_peak_px', 0)
 
-        # 피크 무게중심을 구할 창의 반폭(px). 화면상 선 두께보다 넉넉하게.
-        self.declare_parameter('peak_win_px', 12)
+        # 피크 무게중심을 구할 창의 반폭 -> 화면 폭 대비
+        self.declare_parameter('peak_win_frac', 0.019)
+        self.declare_parameter('peak_win_px', 0)
 
-        # 노란선을 찾을 때 흰선 안쪽으로 얼마나 들어가서 볼지(px).
-        # 흰선 자체의 두께와 그 바깥 갓길이 노란 마스크에 걸리는 걸 배제한다.
-        self.declare_parameter('yellow_inset_px', 12)
+        # 노란선을 찾을 때 흰선 안쪽으로 들어갈 거리 -> 화면 폭 대비
+        self.declare_parameter('yellow_inset_frac', 0.019)
+        self.declare_parameter('yellow_inset_px', 0)
 
         # 노란선은 점선이라 대시 사이 공백에서 사라진다. 그동안 마지막 값을 유지한다.
         self.declare_parameter('yellow_hold_s', 0.8)
@@ -139,9 +146,16 @@ class LaneDetectNode(Node):
         self.yellow_h_max = int(p('yellow_h_max').value)
         self.yellow_s_min = int(p('yellow_s_min').value)
         self.yellow_v_min = int(p('yellow_v_min').value)
-        self.min_peak_px = int(p('min_peak_px').value)
-        self.peak_win_px = int(p('peak_win_px').value)
-        self.yellow_inset_px = int(p('yellow_inset_px').value)
+        self.min_peak_frac = float(p('min_peak_frac').value)
+        self.min_peak_px_override = int(p('min_peak_px').value)
+        self.peak_win_frac = float(p('peak_win_frac').value)
+        self.peak_win_px_override = int(p('peak_win_px').value)
+        self.yellow_inset_frac = float(p('yellow_inset_frac').value)
+        self.yellow_inset_px_override = int(p('yellow_inset_px').value)
+        # 첫 프레임에서 해상도를 보고 확정한다
+        self.min_peak_px = 8
+        self.peak_win_px = 12
+        self.yellow_inset_px = 12
         self.yellow_hold_s = float(p('yellow_hold_s').value)
         self.cam_center_offset_px = float(p('cam_center_offset_px').value)
         self.publish_debug = bool(p('publish_debug').value)
@@ -481,6 +495,19 @@ class LaneDetectNode(Node):
         white, yellow = self._masks(roi)
 
         bh = max(2, int(rh * self.band_height_frac))
+
+        # 해상도 의존 임계값을 이 프레임 크기로 확정한다.
+        # 640x480 에서 튜닝한 절대 픽셀값을 240p 카메라에 그대로 쓰면
+        # 같은 선인데도 전부 임계 미달로 떨어진다.
+        self.min_peak_px = (self.min_peak_px_override
+                            if self.min_peak_px_override > 0
+                            else max(2, int(bh * self.min_peak_frac)))
+        self.peak_win_px = (self.peak_win_px_override
+                            if self.peak_win_px_override > 0
+                            else max(3, int(w * self.peak_win_frac)))
+        self.yellow_inset_px = (self.yellow_inset_px_override
+                                if self.yellow_inset_px_override > 0
+                                else max(3, int(w * self.yellow_inset_frac)))
         ny0 = max(0, min(rh - bh, self._track_band(white, rh, bh)))
         fy0 = max(0, min(rh - bh, int(rh * self.far_band_frac)))
 
