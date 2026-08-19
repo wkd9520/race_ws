@@ -265,6 +265,28 @@ spread = max(offs.values()) - min(offs.values())
 check('J 해상도가 달라도 같은 횡오차', spread < 0.02,
       '(편차 %.4f, 값 %s)' % (spread, ['%.3f' % v for v in offs.values()]))
 
+# K. 90도 코너. 경계선이 화면을 가로로 가로지르면 열 히스토그램에 피크가
+#    안 생겨 '선이 없다'로 오판하고, 판단 노드가 코너 입구에서 차를 세운다.
+#    행 방향으로도 세어 '누운 선'을 인지해야 한다.
+def corner90():
+    img = np.full((H, W, 3), 60, np.uint8)
+    img[300:316, :] = (255, 255, 255)
+    img[420:436, :] = (255, 255, 255)
+    return img
+
+
+lnK = lane_mod.LaneDetectNode()
+feed(lnK, corner90())
+check('K 가로로 누운 선도 유효로 인정', lnK.last('lane/valid') is True,
+      '(corner=%.2f)' % lnK.last('lane/corner'))
+check('K 코너 점수 높음', lnK.last('lane/corner') > 0.5,
+      '(=%.2f)' % lnK.last('lane/corner'))
+
+lnK2 = lane_mod.LaneDetectNode()
+feed(lnK2, road(white_left=20, white_right=480, yellow=208))
+check('K 직선은 코너 점수 낮음', lnK2.last('lane/corner') < 0.2,
+      '(=%.2f)' % lnK2.last('lane/corner'))
+
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')
 tl = tl_mod.TrafficLightNode()
@@ -421,6 +443,19 @@ def obstacles(j, cur=False, oth=False, emg=False, near=float('inf')):
     j._cb_near(ros_stubs.Float64(near))
 
 
+def settle(node, ticks=60, dt=1.0 / 30.0):
+    """속도 변화율 제한이 있으므로 정상상태까지 여러 틱 돌린다.
+
+    스텁에서는 연속 호출 간 실제 경과시간이 0에 가까워 dt 가 무의미해진다.
+    실제 30Hz 처럼 보이도록 prev_t 를 뒤로 밀어 준다.
+    """
+    for _ in range(ticks):
+        node.prev_t = time.time() - dt
+        node.clear()
+        node._tick()
+    return node.last('/speed')
+
+
 # 4-1 출발 게이트
 j = new_judge()
 perceive(j)
@@ -454,10 +489,11 @@ j.clear(); j._tick()
 check('emergency -> 정지', j.last('/speed') == 0.0)
 check('emergency -> 상태', j.last('race/state') == 'EMERGENCY')
 
-# 4-4 차선 인지 유실 -> 정지 (흰선 위치를 모르면 실격 위험 통제 불가)
+# 4-4 차선 인지 유실 -> 유예를 넘기면 정지 (흰선 위치를 모르면 실격 위험 통제 불가)
 perceive(j, valid=False); obstacles(j)
+j._last_ok_stamp -= 10.0        # 유예 초과 상태로 만든다
 j.clear(); j._tick()
-check('lane invalid -> 정지', j.last('/speed') == 0.0)
+check('lane invalid + 유예 초과 -> 정지', j.last('/speed') == 0.0)
 
 
 # 4-4b 정지 사유를 셋으로 구분해서 말하는가.
@@ -499,6 +535,30 @@ check('오래됨 -> "끊김"으로 안내', '끊김' in m3, '(%s)' % m3[:40])
 check('  경과 시간을 같이 표시', '초 전' in m3)
 
 check('세 사유가 서로 다른 문구', len({m1, m2, m3}) == 3)
+
+# 4-4c 인지 일시 유실 -> 즉시 정지가 아니라 서행 통과.
+#      90도 코너에서 선이 잠깐 안 잡힐 때 즉시 서면 아예 못 돈다.
+jg = new_judge()
+jg.require_green = False
+jg.state = jud_mod.ST_RACING
+perceive(jg, valid=True, lane=jud_mod.LANE_RIGHT)
+obstacles(jg)
+# 속도 변화율 제한이 있으므로 정상 속도는 정상상태까지 올려놓고 비교한다
+v_ok = settle(jg)
+check('4-4c 정상 주행 중 속도 > 0', v_ok > 0.0, '(%.2f)' % v_ok)
+
+perceive(jg, valid=False, lane=jud_mod.LANE_RIGHT)   # 인지 유실
+jg._last_ok_stamp = time.time()                      # 방금까지 정상이었다
+jg.clear(); jg._tick()
+v_grace = jg.last('/speed')
+check('4-4c 유실 직후엔 정지하지 않고 서행', v_grace > 0.0,
+      '(%.2f, 유예 %.1fs)' % (v_grace, jg.lane_grace_s))
+check('  서행 속도가 정상보다 낮음', v_grace < v_ok, '(%.2f < %.2f)' % (v_grace, v_ok))
+
+jg._last_ok_stamp -= 10.0                   # 유예 초과
+jg.clear(); jg._tick()
+check('4-4c 유예 넘기면 정지', jg.last('/speed') == 0.0,
+      '(%.2f)' % jg.last('/speed'))
 
 # 4-5 차선 변경
 j2 = new_judge()
@@ -556,19 +616,6 @@ j6 = new_judge()
 j6.require_green = False
 j6.state = jud_mod.ST_RACING
 
-
-
-def settle(node, ticks=60, dt=1.0 / 30.0):
-    """속도 변화율 제한이 있으므로 정상상태까지 여러 틱 돌린다.
-
-    스텁에서는 연속 호출 간 실제 경과시간이 0에 가까워 dt 가 무의미해진다.
-    실제 30Hz 처럼 보이도록 prev_t 를 뒤로 밀어 준다.
-    """
-    for _ in range(ticks):
-        node.prev_t = time.time() - dt
-        node.clear()
-        node._tick()
-    return node.last('/speed')
 
 
 perceive(j6, lane=jud_mod.LANE_RIGHT, curv=0.0)

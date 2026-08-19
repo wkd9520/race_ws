@@ -68,6 +68,10 @@ class LaneDetectNode(Node):
         # 화면 기울기(dx/dy)를 정규화 곡률로 바꾸는 배율. 화면 좌표 기반이라
         # 실제 각도는 아니지만 단조 대응이므로 게인이 흡수한다.
         self.declare_parameter('heading_scale', 2.0)
+        # 한 행의 흰 픽셀이 화면 폭의 이 비율을 넘으면 '완전히 누웠다'로 본다
+        self.declare_parameter('corner_row_frac', 0.45)
+        # 코너 점수가 이 값을 넘으면 흰선 피크가 없어도 valid 를 유지한다
+        self.declare_parameter('corner_valid_thresh', 0.35)
         self.declare_parameter('slope_samples', 6)
         self.declare_parameter('slope_min_pts', 3)
 
@@ -132,6 +136,8 @@ class LaneDetectNode(Node):
         self.roi_top_frac = float(p('roi_top_frac').value)
         self.center_target_frac = float(p('center_target_frac').value)
         self.heading_scale = float(p('heading_scale').value)
+        self.corner_row_frac = float(p('corner_row_frac').value)
+        self.corner_valid_thresh = float(p('corner_valid_thresh').value)
         self.slope_samples = int(p('slope_samples').value)
         self.slope_min_pts = int(p('slope_min_pts').value)
         self.band_autotrack = bool(p('band_autotrack').value)
@@ -192,6 +198,7 @@ class LaneDetectNode(Node):
         self.pub_margin_l = self.create_publisher(Float64, 'lane/margin_left', 10)
         self.pub_margin_r = self.create_publisher(Float64, 'lane/margin_right', 10)
         self.pub_curv = self.create_publisher(Float64, 'lane/curvature', 10)
+        self.pub_corner = self.create_publisher(Float64, 'lane/corner', 10)
         self.pub_dbg = (
             self.create_publisher(Image, 'lane/debug_image', 1) if self.publish_debug else None
         )
@@ -246,6 +253,23 @@ class LaneDetectNode(Node):
             return float(lo + i)
         centroid = float((wgt * np.arange(a, b)).sum() / total)
         return float(lo + centroid)
+
+    def _corner_score(self, white, rh, w):
+        """선이 화면을 가로로 가로지르는 정도. 0=세로(직선), 1=완전히 가로.
+
+        90도 코너에서는 경계선이 가로로 눕는다. 열마다 픽셀을 세는 방식은
+        가로선에서 프로파일이 평평해져 피크가 안 잡히고, 그러면 '선이 없다'로
+        오판해 차가 코너 입구에서 선다.
+
+        여기서는 반대로 '행'마다 세어 본다. 가로선이면 특정 행에 픽셀이 몰리므로
+        행 프로파일에 뚜렷한 피크가 생긴다. 그 피크가 화면 폭의 얼마를 차지하는지가
+        곧 '얼마나 누워 있나'다.
+        """
+        rows = (white > 0).sum(axis=1).astype(np.float32)
+        if rows.size == 0 or w <= 0:
+            return 0.0
+        peak = float(rows.max())
+        return float(np.clip(peak / (w * self.corner_row_frac), 0.0, 1.0))
 
     def _sample_line(self, mask, lo, hi, rh):
         """여러 높이에서 선의 x 를 뽑는다. -> [(y, x), ...]
@@ -540,10 +564,19 @@ class LaneDetectNode(Node):
         else:
             self._yellow_x = None
 
-        # 흰선이 하나도 안 잡히면 주행 근거가 없다 -> invalid
+        # 흰선이 하나도 안 잡히면 주행 근거가 없다 -> invalid.
+        # 다만 '가로로 누운 선'은 열 히스토그램에 안 잡힐 뿐 실제로는 보인다.
+        # 90도 코너가 정확히 그 경우라, 여기서 invalid 를 내면 코너 입구에서 선다.
+        corner = self._corner_score(white, rh, w)
         if x_wl is None and x_wr is None:
-            self.pub_valid.publish(Bool(data=False))
-            return
+            if corner < self.corner_valid_thresh:
+                self.pub_valid.publish(Bool(data=False))
+                self.pub_corner.publish(Float64(data=corner))
+                return
+            # 코너로 누운 상태: 횡오차는 못 구하지만 '코너다'라는 사실은 확실하다.
+            # 판단 노드가 감속하고 마지막 조향을 유지할 수 있게 valid 를 유지한다.
+            self.get_logger().info('가로로 누운 선 감지 (코너 %.2f) - 유효 유지'
+                                   % corner, throttle_duration_sec=1.0)
 
         # 차선폭 추정 갱신: 노란선과 흰선이 함께 보일 때만
         # ---- 노란선 홀드가 만료됐을 때 ----
@@ -616,6 +649,7 @@ class LaneDetectNode(Node):
         self.pub_margin_l.publish(Float64(data=float(np.clip(margin_l, -1.0, 2.0))))
         self.pub_margin_r.publish(Float64(data=float(np.clip(margin_r, -1.0, 2.0))))
         self.pub_curv.publish(Float64(data=curvature))
+        self.pub_corner.publish(Float64(data=corner))
 
         if self.pub_dbg is not None:
             self._publish_debug(roi, white, yellow, x_wl, x_wr, x_y, cx, msg.header)

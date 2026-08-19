@@ -109,6 +109,16 @@ class RaceJudgmentNode(Node):
         # 여기서는 최소한만 더 본다. 총 지연 = 그쪽 확인 + 이 값.
         self.declare_parameter('green_confirm_frames', 2)
 
+        # --- 인지 유실 유예 ---
+        # 90도 코너에서는 경계선이 화면을 가로로 가로질러 열 히스토그램에 안 잡힌다.
+        # 그때 즉시 정지하면 코너 입구에서 서버려 아예 못 돈다. 직전까지 인지가
+        # 되고 있었다면 마지막 조향을 유지한 채 느리게 통과시킨다.
+        #
+        # 안전 근거: 유예 동안은 속도를 크게 낮추므로 흰선을 넘더라도 이동량이
+        # 작고, 유예가 끝나면 정지한다. '영원히 눈감고 달리는' 것과는 다르다.
+        self.declare_parameter('lane_grace_s', 1.2)
+        self.declare_parameter('grace_speed', 0.45)
+
         # --- 워치독 ---
         self.declare_parameter('lane_timeout_s', 0.5)
         self.declare_parameter('scan_timeout_s', 0.5)
@@ -136,7 +146,11 @@ class RaceJudgmentNode(Node):
         self.lane_change_timeout = float(p('lane_change_timeout_s').value)
         self.require_green = bool(p('require_green').value)
         self.green_confirm_frames = int(p('green_confirm_frames').value)
+        self.lane_grace_s = float(p('lane_grace_s').value)
+        self.grace_speed = float(p('grace_speed').value)
         self.lane_timeout = float(p('lane_timeout_s').value)
+        self._last_ok_stamp = 0.0     # 마지막으로 인지가 성립한 시각
+        self._last_steer = 0.0        # 유예 중 유지할 조향
         self.scan_timeout = float(p('scan_timeout_s').value)
 
         # --- 인지 입력 상태 ---
@@ -294,8 +308,20 @@ class RaceJudgmentNode(Node):
             self._publish(0.0, 0.0)
             return
 
-        if not lane_fresh:
-            # 차선을 못 보면 흰선 위치를 모른다 = 실격 위험을 통제할 수 없다.
+        if lane_fresh:
+            self._last_ok_stamp = now
+        else:
+            # 90도 코너에서는 경계선이 화면을 가로로 가로질러 열 히스토그램에
+            # 안 잡힌다. 즉시 정지하면 코너 입구에서 서버려 아예 못 돈다.
+            # 직전까지 되고 있었다면 마지막 조향을 유지한 채 느리게 통과시킨다.
+            since_ok = now - self._last_ok_stamp
+            if self._last_ok_stamp > 0.0 and since_ok < self.lane_grace_s:
+                self.get_logger().warn(
+                    '차선 일시 유실 %.1fs -- 마지막 조향 유지하며 서행 (유예 %.1fs)'
+                    % (since_ok, self.lane_grace_s), throttle_duration_sec=0.5)
+                self._publish(self.grace_speed, self._last_steer)
+                return
+            # 유예를 넘겼으면 실격 위험을 통제할 수 없다 -> 정지
             self.state = ST_EMERGENCY
             self.get_logger().warn(self._lane_stall_reason(now), throttle_duration_sec=1.0)
             self._publish(0.0, 0.0)
@@ -367,6 +393,7 @@ class RaceJudgmentNode(Node):
         v = self._v_cmd + max(-limit, min(limit, dv))
         v = max(MIN_SPEED, min(MAX_SPEED, v))
         self._v_cmd = v
+        self._last_steer = steer
 
         self._publish(v, steer)
 
