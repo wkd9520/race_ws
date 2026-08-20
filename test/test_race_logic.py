@@ -339,6 +339,47 @@ feed(lnL, road(white_left=20, white_right=480, yellow=None))
 check('L 낡은 홀드는 횡오차에 안 씀', abs(lnL.last('lane/offset_right')) < 1e-6,
       '(%+.3f, 헤딩만으로 주행)' % lnL.last('lane/offset_right'))
 
+# M. 실주행 로그(2026-08-20)에서 재현된 오검출. 밴드에 잡힌 '중앙선'이
+#    x=0.00 과 x=0.96 이었다 -- 화면 양 끝이니 중앙선일 리 없고, 갓길과 차체다.
+#    우측 흰선이 밴드에서 안 잡혀 '두 흰선 사이' 제약이 화면 끝까지 열린 탓이다.
+#    차체 색(H=18 S=254)은 주황 중앙선과 거의 같아 색으로는 못 가른다 -> 위치로 가른다.
+def logged_scene():
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:, :] = (106, 113, 73)                                     # 노면
+    hsv[:, :int(W * 0.09)] = (33, 133, 152)                        # 좌 갓길
+    hsv[int(H * 0.54):int(H * 0.66),
+        int(W * 0.58):int(W * 0.70)] = (33, 133, 148)              # 갓길 덩어리(밴드 위)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    bgr[int(H * 0.60):, int(W * 0.13):int(W * 0.17)] = (255, 255, 255)   # 좌 흰선
+    bgr[int(H * 0.58):int(H * 0.66),
+        int(W * 0.67):int(W * 0.71)] = (255, 255, 255)                   # 우 흰선(밴드 위)
+    body = cv2.cvtColor(np.uint8([[(18, 254, 216)]]), cv2.COLOR_HSV2BGR)[0][0]
+    bgr[int(H * 0.90):, int(W * 0.90):] = body                           # 자기 차체
+    mid = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
+    for y in range(int(H * 0.60), H, 40):
+        bgr[y:y + 22, int(W * 0.34):int(W * 0.38)] = mid                 # 진짜 중앙선
+    return bgr
+
+
+def yellow_x_with(bottom, search):
+    n = lane_mod.LaneDetectNode()
+    n.roi_bottom_frac = bottom
+    n.yellow_search_frac = search
+    for _ in range(3):
+        n.on_image(ros_stubs.Image(cv=logged_scene()))
+    return n._yellow_x
+
+
+x_old = yellow_x_with(1.0, 10.0)        # 예전: 하단 안 자르고 창 무제한
+x_new = yellow_x_with(0.94, 0.75)
+
+check('M 예전에는 차체를 중앙선으로 잡았다 (전제 확인)',
+      x_old is not None and x_old / W > 0.8,
+      '(x=%.2f)' % (x_old / W) if x_old else '(None)')
+check('M 수정 후 실제 중앙선을 잡는다',
+      x_new is not None and abs(x_new / W - 0.36) < 0.05,
+      '(x=%.2f, 실제 0.36)' % (x_new / W) if x_new else '(None)')
+
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')
 tl = tl_mod.TrafficLightNode()

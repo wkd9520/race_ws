@@ -80,6 +80,11 @@ def generate_launch_description():
         # 기본값은 placeholder다. 안 잡히면 debug_probe:=true 로 실측 H/S/V 를
         # 로그에 찍어보고 그 값으로 채운다.
         DeclareLaunchArgument('lane_roi_top_frac', default_value='0.55'),
+        # ROI 하단. 화면 맨 아래엔 자기 차체가 찍히는데, 차체 색이 주황 중앙선과
+        # 거의 같아 색으로는 못 가른다. 차체가 더 보이면 값을 낮출 것.
+        DeclareLaunchArgument('lane_roi_bottom_frac', default_value='0.94'),
+        # 중앙선을 찾을 가로 범위(화면 중심 기준). 가장자리의 갓길을 배제한다.
+        DeclareLaunchArgument('lane_yellow_search_frac', default_value='0.75'),
         DeclareLaunchArgument('lane_white_s_max', default_value='60'),
         DeclareLaunchArgument('lane_white_v_min', default_value='180'),
         DeclareLaunchArgument('lane_yellow_h_min', default_value='18'),
@@ -139,6 +144,8 @@ def generate_launch_description():
             'publish_debug': _bool('publish_debug'),
             'debug_probe': _bool('debug_probe'),
             'roi_top_frac': _float('lane_roi_top_frac'),
+            'roi_bottom_frac': _float('lane_roi_bottom_frac'),
+            'yellow_search_frac': _float('lane_yellow_search_frac'),
             'white_s_max': _int('lane_white_s_max'),
             'white_v_min': _int('lane_white_v_min'),
             'yellow_h_min': _int('lane_yellow_h_min'),

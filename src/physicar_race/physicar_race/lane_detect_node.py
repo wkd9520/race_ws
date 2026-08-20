@@ -52,6 +52,10 @@ class LaneDetectNode(Node):
         # 화면 위쪽은 하늘/관중석이라 버린다. 실차 카메라는 FOV 98도, 480x360이라
         # 연습 카메라(ELP 1280x720)와 화각이 달라 이 값 재조정 필요.
         self.declare_parameter('roi_top_frac', 0.55)
+        # ROI 아래쪽도 잘라낸다. 화면 맨 아래엔 자기 차체가 찍히는데, 실측상
+        # 차체 색(H=18 S=254)이 주황 중앙선과 거의 같아 색으로는 못 가른다.
+        # 위치로 가른다 -- 차체는 늘 화면 맨 아래 가장자리에 고정이다.
+        self.declare_parameter('roi_bottom_frac', 0.94)
         # 밴드를 흰선이 실제로 있는 세로 위치로 따라가게 한다. 헤어핀에서는 선이
         # 프레임을 드나들어 고정 밴드가 빈 노면이나 차체를 보게 되는데, 그러면
         # 색이 맞아도 valid=False 로 떨어져 차가 선다.
@@ -108,6 +112,12 @@ class LaneDetectNode(Node):
         self.declare_parameter('peak_win_px', 0)
 
         # 노란선을 찾을 때 흰선 안쪽으로 들어갈 거리 -> 화면 폭 대비
+        # 중앙선을 찾을 가로 범위(화면 중심 기준 half-width 대비).
+        # 한쪽 흰선만 보이면 '두 흰선 사이' 제약이 화면 끝까지 열려버려
+        # 갓길과 차체를 중앙선으로 잡는다. 중앙선은 화면 가장자리에 있을 수
+        # 없으므로 그 사전 지식으로 한 번 더 좁힌다.
+        self.declare_parameter('yellow_search_frac', 0.75)
+
         self.declare_parameter('yellow_inset_frac', 0.019)
         self.declare_parameter('yellow_inset_px', 0)
 
@@ -144,6 +154,7 @@ class LaneDetectNode(Node):
 
         p = self.get_parameter
         self.roi_top_frac = float(p('roi_top_frac').value)
+        self.roi_bottom_frac = float(p('roi_bottom_frac').value)
         self.center_target_frac = float(p('center_target_frac').value)
         self.heading_scale = float(p('heading_scale').value)
         self.corner_row_frac = float(p('corner_row_frac').value)
@@ -166,6 +177,7 @@ class LaneDetectNode(Node):
         self.min_peak_px_override = int(p('min_peak_px').value)
         self.peak_win_frac = float(p('peak_win_frac').value)
         self.peak_win_px_override = int(p('peak_win_px').value)
+        self.yellow_search_frac = float(p('yellow_search_frac').value)
         self.yellow_inset_frac = float(p('yellow_inset_frac').value)
         self.yellow_inset_px_override = int(p('yellow_inset_px').value)
         # 첫 프레임에서 해상도를 보고 확정한다
@@ -519,7 +531,9 @@ class LaneDetectNode(Node):
             return
 
         h, w = bgr.shape[:2]
-        roi = bgr[int(h * self.roi_top_frac):, :]
+        y_top = int(h * self.roi_top_frac)
+        y_bot = max(y_top + 4, int(h * self.roi_bottom_frac))
+        roi = bgr[y_top:y_bot, :]
         rh = roi.shape[0]
         if rh < 4:
             self.pub_valid.publish(Bool(data=False))
@@ -573,9 +587,18 @@ class LaneDetectNode(Node):
         # 그러면 중앙선 위치가 갓길로 잡히고 차선 구조가 통째로 어긋난다.
         # HSV 로는 갓길과 주황 점선을 못 가르지만(색상이 겹친다), 기하로는 확실하다 --
         # 중앙선은 정의상 두 경계선 안쪽에만 존재한다.
+        # 중앙선 탐색 범위: 흰선 사이 ∩ 화면 중앙부.
+        # 한쪽 흰선만 보이면 흰선 제약이 화면 끝까지 열리므로, '중앙선은
+        # 가장자리에 있을 수 없다'는 사전 지식으로 한 번 더 좁힌다.
+        # 실측에서 갓길(x=0.05)과 차체(x=0.93, 0.98)를 중앙선으로 잡았다.
+        search_lo = cx - self.yellow_search_frac * half
+        search_hi = cx + self.yellow_search_frac * half
+
         def find_yellow(prof, wl, wr):
             lo = (wl + self.yellow_inset_px) if wl is not None else 0
             hi = (wr - self.yellow_inset_px) if wr is not None else w
+            lo = max(lo, search_lo)
+            hi = min(hi, search_hi)
             return self._peak(prof, lo, hi) if hi > lo else None
 
         # 차선 판정용은 근거리(차가 지금 어느 차선에 있나)
