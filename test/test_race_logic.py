@@ -287,6 +287,58 @@ feed(lnK2, road(white_left=20, white_right=480, yellow=208))
 check('K 직선은 코너 점수 낮음', lnK2.last('lane/corner') < 0.2,
       '(=%.2f)' % lnK2.last('lane/corner'))
 
+# L. 선행점(lookahead). 횡오차를 가장 가까운 밴드에서만 재면 오차가 이미 생긴
+#    뒤에야 반응해 추종이 늘 뒤처진다(테일링). 앞을 보면 커브에 미리 반응한다.
+ROI0 = int(H * 0.55)
+
+
+def curve_in_roi(bend):
+    """ROI 안에서 위로 갈수록 오른쪽으로 휘는 코스. 아래(가까운 곳)는 직선."""
+    img = np.full((H, W, 3), 60, np.uint8)
+    for y in range(H):
+        f = max(0.0, (H - 1 - y) / float(H - 1 - ROI0))
+        d = int(bend * f * 150)
+        for x0 in (60, 420):
+            x = x0 + d
+            if 4 <= x < W - 4:
+                img[y, x - 4:x + 4] = (255, 255, 255)
+        if (y // 30) % 2 == 0:
+            x = 208 + d
+            if 4 <= x < W - 4:
+                img[y, x - 4:x + 4] = (0, 255, 255)
+    return img
+
+
+def off_at(lookahead, bend):
+    n = lane_mod.LaneDetectNode()
+    n.lookahead_frac = lookahead
+    for _ in range(3):
+        n.on_image(ros_stubs.Image(cv=curve_in_roi(bend)))
+    return n.last('lane/offset_right')
+
+
+near_curve = off_at(0.0, 1.0)
+look_curve = off_at(0.5, 1.0)
+check('L 앞을 보면 커브에 더 크게 반응', look_curve > near_curve * 1.5,
+      '(근거리 %+.3f -> 선행 %+.3f)' % (near_curve, look_curve))
+
+near_str = off_at(0.0, 0.0)
+look_str = off_at(0.5, 0.0)
+check('L 직선에서는 헛반응 없음', abs(look_str - near_str) < 0.02,
+      '(근거리 %+.3f / 선행 %+.3f)' % (near_str, look_str))
+check('  직선 자체가 0 근처', abs(look_str) < 0.05, '(%+.3f)' % look_str)
+
+# 오래된 홀드 값으로 조향하지 않는다. 홀드된 위치는 화면 좌표에 얼어붙어
+# 있는데 차는 계속 움직이므로, 낡은 목표를 향해 달리게 된다.
+lnL = lane_mod.LaneDetectNode()
+feed(lnL, road(white_left=20, white_right=480, yellow=270))
+check('L 중앙선 보이면 횡오차 나옴', abs(lnL.last('lane/offset_right')) > 0.05,
+      '(%+.3f)' % lnL.last('lane/offset_right'))
+lnL._yellow_stamp -= 10.0        # 홀드는 살아있지만 오래됨
+feed(lnL, road(white_left=20, white_right=480, yellow=None))
+check('L 낡은 홀드는 횡오차에 안 씀', abs(lnL.last('lane/offset_right')) < 1e-6,
+      '(%+.3f, 헤딩만으로 주행)' % lnL.last('lane/offset_right'))
+
 # ====================================================================== 2
 print('\n[2] traffic_light_node - 적/녹 판정')
 tl = tl_mod.TrafficLightNode()

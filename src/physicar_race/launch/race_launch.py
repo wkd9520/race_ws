@@ -87,6 +87,12 @@ def generate_launch_description():
         # 헤딩(흰선 기울기)을 정규화 곡률로 바꾸는 배율
         DeclareLaunchArgument('lane_heading_scale', default_value='2.0'),
         DeclareLaunchArgument('lane_slope_samples', default_value='6'),
+        # 횡오차를 얼마나 앞을 보고 잴지. 0=근거리(예전), 1=원거리.
+        # 근거리에서만 재면 오차가 생긴 뒤에야 반응해 추종이 뒤처진다(테일링).
+        DeclareLaunchArgument('lane_lookahead_frac', default_value='0.5'),
+        # 점선 홀드를 횡오차에 쓸 최대 시간. 홀드 값은 화면에 얼어붙어 있는데
+        # 차는 움직이므로, 오래되면 낡은 목표를 향해 달리게 된다.
+        DeclareLaunchArgument('lane_yellow_lateral_hold_s', default_value='0.25'),
         DeclareLaunchArgument('lane_switch_hysteresis', default_value='0.08'),
         DeclareLaunchArgument('band_autotrack', default_value='true'),
         # 실제로 선을 찾는 '근거리 밴드'의 ROI 내 위치/높이.
@@ -136,6 +142,8 @@ def generate_launch_description():
             'center_target_frac': _float('lane_center_target_frac'),
             'heading_scale': _float('lane_heading_scale'),
             'slope_samples': _int('lane_slope_samples'),
+            'lookahead_frac': _float('lane_lookahead_frac'),
+            'yellow_lateral_hold_s': _float('lane_yellow_lateral_hold_s'),
             'lane_switch_hysteresis': _float('lane_switch_hysteresis'),
             'band_autotrack': _bool('band_autotrack'),
             'near_band_frac': _float('lane_near_band_frac'),

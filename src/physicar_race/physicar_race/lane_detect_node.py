@@ -114,6 +114,16 @@ class LaneDetectNode(Node):
         # 노란선은 점선이라 대시 사이 공백에서 사라진다. 그동안 마지막 값을 유지한다.
         self.declare_parameter('yellow_hold_s', 0.8)
 
+        # 횡오차를 '얼마나 앞을 보고' 잴지. 0 = 근거리 밴드(예전 동작),
+        # 1 = 원거리 밴드. 근거리에서만 재면 오차가 이미 생긴 뒤에야 반응해
+        # 추종이 늘 뒤처진다(테일링). 앞을 보면 그만큼 선행성이 생긴다.
+        self.declare_parameter('lookahead_frac', 0.5)
+
+        # 점선 홀드는 '차선 판정'용으로만 쓰고, 횡오차에는 이 시간까지만 쓴다.
+        # 홀드된 값은 화면 좌표에 얼어붙어 있는데 차는 계속 움직이므로,
+        # 오래된 값으로 조향하면 낡은 목표를 향해 달리게 된다.
+        self.declare_parameter('yellow_lateral_hold_s', 0.25)
+
         # 카메라 광축과 차량 중심선의 픽셀 오프셋. 실차 인수 후 직진 주행으로 실측.
         self.declare_parameter('cam_center_offset_px', 0.0)
 
@@ -163,6 +173,8 @@ class LaneDetectNode(Node):
         self.peak_win_px = 12
         self.yellow_inset_px = 12
         self.yellow_hold_s = float(p('yellow_hold_s').value)
+        self.lookahead_frac = float(p('lookahead_frac').value)
+        self.yellow_lateral_hold_s = float(p('yellow_lateral_hold_s').value)
         self.cam_center_offset_px = float(p('cam_center_offset_px').value)
         self.publish_debug = bool(p('publish_debug').value)
         self.debug_probe = bool(p('debug_probe').value)
@@ -539,6 +551,14 @@ class LaneDetectNode(Node):
         near_y = self._profile(yellow, ny0, ny0 + bh)
         far_w = self._profile(white, fy0, fy0 + bh)
 
+        # 선행 밴드: 근거리와 원거리 사이를 lookahead_frac 으로 보간한다.
+        # 횡오차는 여기서 잰다. 근거리에서만 재면 오차가 이미 생긴 뒤에야
+        # 반응해 추종이 늘 뒤처진다.
+        ly0 = int(ny0 + (fy0 - ny0) * min(max(self.lookahead_frac, 0.0), 1.0))
+        ly0 = max(0, min(rh - bh, ly0))
+        look_y = self._profile(yellow, ly0, ly0 + bh)
+        look_w = self._profile(white, ly0, ly0 + bh)
+
         cx = w * 0.5 + self.cam_center_offset_px
         half = w * 0.5
 
@@ -553,16 +573,36 @@ class LaneDetectNode(Node):
         # 그러면 중앙선 위치가 갓길로 잡히고 차선 구조가 통째로 어긋난다.
         # HSV 로는 갓길과 주황 점선을 못 가르지만(색상이 겹친다), 기하로는 확실하다 --
         # 중앙선은 정의상 두 경계선 안쪽에만 존재한다.
-        y_lo = (x_wl + self.yellow_inset_px) if x_wl is not None else 0
-        y_hi = (x_wr - self.yellow_inset_px) if x_wr is not None else w
-        x_y = self._peak(near_y, y_lo, y_hi) if y_hi > y_lo else None
+        def find_yellow(prof, wl, wr):
+            lo = (wl + self.yellow_inset_px) if wl is not None else 0
+            hi = (wr - self.yellow_inset_px) if wr is not None else w
+            return self._peak(prof, lo, hi) if hi > lo else None
+
+        # 차선 판정용은 근거리(차가 지금 어느 차선에 있나)
+        x_y_near = find_yellow(near_y, x_wl, x_wr)
+
+        # 횡오차용은 선행 밴드(앞을 보고 미리 꺾기 위해).
+        # 선행 밴드의 흰선으로 구간을 좁혀야 그 높이의 갓길을 배제할 수 있다.
+        x_y_look = find_yellow(look_y,
+                               self._peak(look_w, 0, cx),
+                               self._peak(look_w, cx, w))
+
         now = time.time()
-        if x_y is not None:
-            self._yellow_x, self._yellow_stamp = x_y, now
+        if x_y_near is not None:
+            self._yellow_x, self._yellow_stamp = x_y_near, now
         elif self._yellow_x is not None and (now - self._yellow_stamp) < self.yellow_hold_s:
-            x_y = self._yellow_x
+            x_y_near = self._yellow_x
         else:
             self._yellow_x = None
+
+        # 홀드된 값은 화면 좌표에 얼어붙어 있는데 차는 계속 움직인다. 오래된 값으로
+        # 조향하면 낡은 목표를 향해 달리므로, 횡오차에는 짧은 시간만 허용한다.
+        # 그 뒤로는 횡오차를 포기하고 헤딩만으로 간다.
+        hold_age = now - self._yellow_stamp
+        if x_y_look is None and hold_age < self.yellow_lateral_hold_s:
+            x_y_look = self._yellow_x
+
+        x_y = x_y_near      # 이후 차선 판정/기하는 근거리 기준
 
         # 흰선이 하나도 안 잡히면 주행 근거가 없다 -> invalid.
         # 다만 '가로로 누운 선'은 열 히스토그램에 안 잡힐 뿐 실제로는 보인다.
@@ -605,13 +645,15 @@ class LaneDetectNode(Node):
         target_right = cx - tgt_px      # 오른쪽 차선 주행 시 중앙선이 있어야 할 곳
         target_left = cx + tgt_px       # 왼쪽 차선 주행 시
 
-        if x_y is not None:
+        # 횡오차는 '선행 밴드'의 중앙선으로 잰다. 근거리에서 재면 오차가 이미
+        # 생긴 뒤에야 반응해 추종이 늘 뒤처진다(테일링).
+        if x_y_look is not None:
             # + = 중앙선이 목표보다 오른쪽 = 차가 너무 왼쪽에 있다
-            off_r = (x_y - target_right) / half
-            off_l = (x_y - target_left) / half
+            off_r = (x_y_look - target_right) / half
+            off_l = (x_y_look - target_left) / half
         else:
-            # 중앙선을 못 보면 횡오차는 0으로 두고 헤딩만으로 간다.
-            # 없는 값을 흰선에서 지어내면 그 오차가 그대로 조향에 들어간다.
+            # 선행 지점에서 중앙선을 못 보면 횡오차는 0으로 두고 헤딩만으로 간다.
+            # 없는 값을 지어내거나 낡은 값을 쓰면 그 오차가 그대로 조향에 들어간다.
             off_r = off_l = 0.0
 
         # ---- 흰선 여유 ----
