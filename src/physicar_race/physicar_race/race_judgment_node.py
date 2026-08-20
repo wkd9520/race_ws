@@ -119,6 +119,16 @@ class RaceJudgmentNode(Node):
         self.declare_parameter('lane_grace_s', 1.2)
         self.declare_parameter('grace_speed', 0.45)
 
+        # --- 코너 관통 조향 ---
+        # 유예 중 '마지막 조향 유지'는 90도 코너에서 무용지물이다. 진입 직전의
+        # 조향은 거의 0(직진)이라 그대로 직진해 코너를 지나쳐 버린다.
+        #
+        # 방향을 새로 검출할 필요는 없다. 진입 직전에 이미 헤딩이 그쪽으로
+        # 기울어 있으므로, 그 부호를 기억했다가 강하게 꺾으면 된다.
+        self.declare_parameter('corner_steer_frac', 0.85)   # 최대조향 대비
+        self.declare_parameter('heading_ema', 0.15)         # 헤딩 평활 계수
+        self.declare_parameter('corner_dir_min', 0.05)      # 이보다 작으면 방향 불명
+
         # --- 워치독 ---
         self.declare_parameter('lane_timeout_s', 0.5)
         self.declare_parameter('scan_timeout_s', 0.5)
@@ -148,6 +158,10 @@ class RaceJudgmentNode(Node):
         self.green_confirm_frames = int(p('green_confirm_frames').value)
         self.lane_grace_s = float(p('lane_grace_s').value)
         self.grace_speed = float(p('grace_speed').value)
+        self.corner_steer_frac = float(p('corner_steer_frac').value)
+        self.heading_ema_a = float(p('heading_ema').value)
+        self.corner_dir_min = float(p('corner_dir_min').value)
+        self._heading_ema = 0.0       # 최근 헤딩 추세 (코너 방향 기억)
         self.lane_timeout = float(p('lane_timeout_s').value)
         self._last_ok_stamp = 0.0     # 마지막으로 인지가 성립한 시각
         self._last_steer = 0.0        # 유예 중 유지할 조향
@@ -162,6 +176,7 @@ class RaceJudgmentNode(Node):
         self.margin_l = 1.0
         self.margin_r = 1.0
         self.curvature = 0.0
+        self.corner = 0.0
 
         self.traffic_state = 'NONE'
         self.traffic_valid = False
@@ -189,6 +204,7 @@ class RaceJudgmentNode(Node):
         self.create_subscription(Float64, 'lane/margin_left', self._cb_margin_l, 10)
         self.create_subscription(Float64, 'lane/margin_right', self._cb_margin_r, 10)
         self.create_subscription(Float64, 'lane/curvature', self._cb_curv, 10)
+        self.create_subscription(Float64, 'lane/corner', self._cb_corner, 10)
 
         self.create_subscription(String, 'traffic/light_state', self._cb_light, 10)
         self.create_subscription(Bool, 'traffic/valid', self._cb_traffic_valid, 10)
@@ -232,6 +248,12 @@ class RaceJudgmentNode(Node):
 
     def _cb_curv(self, m):
         self.curvature = float(m.data)
+        # 코너에 들어가 인지가 끊기기 '전'의 방향을 기억해 둔다
+        a = self.heading_ema_a
+        self._heading_ema = (1.0 - a) * self._heading_ema + a * self.curvature
+
+    def _cb_corner(self, m):
+        self.corner = float(m.data)
 
     def _cb_light(self, m):
         self.traffic_state = str(m.data)
@@ -256,6 +278,33 @@ class RaceJudgmentNode(Node):
         if bool(m.data) and self.state == ST_WAIT_GREEN:
             self.get_logger().warn('수동 출발 명령 수신 - 신호등 게이트 건너뜀')
             self.state = ST_RACING
+
+    def _grace_steer(self, since_ok):
+        """인지가 끊긴 동안 어느 쪽으로 얼마나 꺾을지.
+
+        마지막 조향을 그대로 유지하면 90도 코너를 못 돈다. 진입 직전 조향은
+        거의 0(직진)이라 그대로 직진해 코너를 지나친다.
+
+        대신 끊기기 전의 헤딩 추세를 방향으로 삼아 강하게 꺾는다. 코너에
+        진입 중이었다면 헤딩이 이미 그쪽으로 기울어 있다.
+        """
+        d = self._heading_ema
+        if abs(d) < self.corner_dir_min:
+            # 방향이 불명확하면 마지막 조향을 유지한다. 근거 없이 꺾는 것보다
+            # 낫다 -- 어느 쪽인지 모르는데 꺾으면 반대로 갈 확률이 절반이다.
+            self.get_logger().warn(
+                '차선 일시 유실 %.1fs -- 방향 불명(헤딩 %.3f), 마지막 조향 유지'
+                % (since_ok, d), throttle_duration_sec=0.5)
+            return self._last_steer
+
+        # curvature 는 + 가 우커브, 조향은 + 가 좌회전이라 부호를 뒤집는다.
+        steer = -math.copysign(self.corner_steer_frac * MAX_STEER, d)
+        steer = self.steer_sign * steer
+        self.get_logger().warn(
+            '차선 일시 유실 %.1fs -- %s 코너로 판단, 강제 조향 %.1f도 (헤딩 %.3f)'
+            % (since_ok, '우' if d > 0 else '좌', math.degrees(steer), d),
+            throttle_duration_sec=0.5)
+        return max(-MAX_STEER, min(MAX_STEER, steer))
 
     def _lane_stall_reason(self, now):
         """차가 안 가는 이유를 셋으로 갈라 말한다.
@@ -316,10 +365,7 @@ class RaceJudgmentNode(Node):
             # 직전까지 되고 있었다면 마지막 조향을 유지한 채 느리게 통과시킨다.
             since_ok = now - self._last_ok_stamp
             if self._last_ok_stamp > 0.0 and since_ok < self.lane_grace_s:
-                self.get_logger().warn(
-                    '차선 일시 유실 %.1fs -- 마지막 조향 유지하며 서행 (유예 %.1fs)'
-                    % (since_ok, self.lane_grace_s), throttle_duration_sec=0.5)
-                self._publish(self.grace_speed, self._last_steer)
+                self._publish(self.grace_speed, self._grace_steer(since_ok))
                 return
             # 유예를 넘겼으면 실격 위험을 통제할 수 없다 -> 정지
             self.state = ST_EMERGENCY

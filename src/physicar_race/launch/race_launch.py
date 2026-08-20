@@ -57,6 +57,13 @@ def generate_launch_description():
         # 콘 감지 노드(카메라 초록 + 라이다 거리 융합). 콘 없는 맵이면 false.
         DeclareLaunchArgument('use_cone_detect', default_value='true'),
 
+        # --- 90도 코너 관통 ---
+        # 인지가 끊긴 동안 끊기기 전 헤딩 방향으로 강하게 꺾는다.
+        # 0 이면 예전처럼 마지막 조향을 유지(= 코너에서 직진해 버림).
+        DeclareLaunchArgument('corner_steer_frac', default_value='0.85'),
+        DeclareLaunchArgument('lane_grace_s', default_value='1.2'),
+        DeclareLaunchArgument('grace_speed', default_value='0.45'),
+
         # 8/18 공개된 코스 규격의 실제 차선 폭으로 교체할 것. 기본값은 추정치다.
         DeclareLaunchArgument('lane_width_m', default_value='0.50'),
 

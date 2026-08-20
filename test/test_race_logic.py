@@ -612,6 +612,39 @@ jg.clear(); jg._tick()
 check('4-4c 유예 넘기면 정지', jg.last('/speed') == 0.0,
       '(%.2f)' % jg.last('/speed'))
 
+# 4-4d 90도 코너 관통. 유예 중 '마지막 조향 유지'는 코너에서 무용지물이다 --
+#      진입 직전 조향은 거의 0(직진)이라 그대로 직진해 코너를 지나친다.
+#      끊기기 전의 헤딩 방향을 기억해 강하게 꺾어야 한다.
+def grace_steer_for(heading, last_steer=0.0):
+    jc = new_judge()
+    jc.require_green = False
+    jc.state = jud_mod.ST_RACING
+    perceive(jc, valid=True, lane=jud_mod.LANE_RIGHT)
+    obstacles(jc)
+    jc.clear(); jc._tick()
+    jc._heading_ema = heading          # 코너 진입 중이었다
+    jc._last_steer = last_steer        # 그런데 조향은 아직 거의 0
+    perceive(jc, valid=False, lane=jud_mod.LANE_RIGHT)
+    jc._last_ok_stamp = time.time()
+    jc.clear(); jc._tick()
+    return jc.last('/steering')
+
+
+s_right = grace_steer_for(+0.6)        # curvature + = 우커브
+s_left = grace_steer_for(-0.6)
+s_none = grace_steer_for(0.0)
+
+check('4-4d 우커브에서 유실 -> 우측으로 강제 조향', s_right < -0.1,
+      '(%.1f도)' % math.degrees(s_right))
+check('4-4d 좌커브에서 유실 -> 좌측으로 강제 조향', s_left > 0.1,
+      '(%.1f도)' % math.degrees(s_left))
+check('4-4d 조향이 0이 아님 (직진 관통 방지)',
+      abs(s_right) > math.radians(10) and abs(s_left) > math.radians(10),
+      '(우 %.1f도 / 좌 %.1f도)' % (math.degrees(s_right), math.degrees(s_left)))
+check('4-4d 방향 불명이면 근거 없이 꺾지 않음', abs(s_none) < 1e-6,
+      '(%.1f도)' % math.degrees(s_none))
+check('4-4d 한계 안', abs(s_right) <= jud_mod.MAX_STEER + 1e-9)
+
 # 4-5 차선 변경
 j2 = new_judge()
 j2.require_green = False
