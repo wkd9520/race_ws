@@ -163,6 +163,46 @@ check('C 선을 놓쳐도 조향 유지', abs(nc._steer_cmd - s_before) < 1e-9,
 check('C 속도도 유지 (정지하지 않는다)', nc._speed_cmd == v_before,
       '(%.2f -> %.2f)' % (v_before, nc._speed_cmd))
 
+print('\n[6b] 속도 프로파일 - 물리 한계 안에서 빠르게')
+# 최소 회전반경 R = 0.18/tan(20°) = 0.495m. 횡가속 a = v²/R.
+# 미끄러짐 기준을 대략 1.5 m/s² 로 보면 코너 안전속도는 0.86 m/s.
+# 직선은 반경 제약이 없으므로 훨씬 높아도 된다.
+R_MIN = 0.18 / math.tan(math.radians(20))
+
+
+def speed_after(mid, straight_ticks=40, corner_ticks=15):
+    nn = cf.CentroidFollowNode()
+    for _ in range(straight_ticks):
+        nn.on_image(ros_stubs.Image(cv=scene(0.50)))     # 직선에서 가속
+    if mid is not None:
+        for _ in range(corner_ticks):
+            nn.on_image(ros_stubs.Image(cv=scene(mid)))  # 코너 진입
+    return nn._speed_cmd
+
+
+v_straight = speed_after(None)
+v_gentle = speed_after(0.40)
+v_sharp = speed_after(0.12)
+
+check('직선에서 speed_max 까지 가속', v_straight > 1.0,
+      '(%.2f m/s)' % v_straight)
+check('급커브가 물리 한계 안', (v_sharp ** 2) / R_MIN < 1.5,
+      '(%.2f m/s, 횡가속 %.2f m/s²)' % (v_sharp, v_sharp ** 2 / R_MIN))
+check('오차에 비례해 감속 (완만 > 급커브)', v_gentle > v_sharp,
+      '(완만 %.2f > 급 %.2f)' % (v_gentle, v_sharp))
+check('하한 아래로는 안 떨어짐', v_sharp >= cf.CentroidFollowNode().speed_min - 1e-9,
+      '(%.2f)' % v_sharp)
+
+# 감속이 코너 진입 안에 끝나야 한다. 고정 step 이면 max 를 올릴수록 느려진다.
+nb2 = cf.CentroidFollowNode()
+nb2._throttle = nb2.speed_max
+ticks = 0
+while nb2._throttle > nb2.speed_min + 0.05 and ticks < 100:
+    nb2.on_image(ros_stubs.Image(cv=scene(0.12)))
+    ticks += 1
+check('급커브 감속이 빠르다 (30Hz 기준 0.5초 안)', ticks < 15,
+      '(%d프레임 = %.2f초)' % (ticks, ticks / 30.0))
+
 print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
 # 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에
 # 그대로 쓰면 화면 끝에서도 8도(240p 면 4도)까지밖에 안 나온다 -- 코너에서

@@ -130,9 +130,21 @@ class CentroidFollowNode(Node):
 
         # A. 오차가 클 때(코너) 감속, 작을 때(직선) 가속.
         # 원본 실측: MAX 0.3 / MIN 0.15 / STEP 0.05 -- 코너에서 절반까지 떨어진다.
-        self.declare_parameter('speed_max', 0.6)
-        self.declare_parameter('speed_min', 0.3)
-        self.declare_parameter('speed_step', 0.05)
+        # 물리 한계: 최소 회전반경 R = 0.18/tan(20°) = 0.495m.
+        # 횡가속 a = v²/R 이므로 a_lat 1.5 기준 코너 안전속도는 0.86 m/s.
+        # 직선은 반경 제약이 없으므로 max 를 훨씬 높게 잡아도 된다.
+        self.declare_parameter('speed_max', 1.2)
+        self.declare_parameter('speed_min', 0.45)
+
+        # 가속은 완만하게, 감속은 빠르게. 원본은 둘 다 같은 step 이었는데,
+        # 속도를 올리면 그 대칭이 문제가 된다 -- max 1.2 에 step 0.05 면
+        # 감속에 0.88m 를 쓰고, 그때는 이미 코너를 지나쳤다.
+        self.declare_parameter('speed_step', 0.04)      # 가속
+        self.declare_parameter('brake_step', 0.20)      # 감속
+
+        # 감속량을 오차에 비례시킨다. 살짝 벗어나면 조금, 코너에 깊이 들어가면
+        # 많이 줄인다. 원본은 고정량이라 완만한 커브에서도 과하게 느려졌다.
+        self.declare_parameter('brake_scale', True)
 
         # B. 이만큼 벗어나야 조향을 바꾼다. 원본 TARGET_THRESHOLD=10px(160px 폭 기준).
         # "선 위나 근처에서 너무 예민하게 떠는 걸 막는다"
@@ -162,6 +174,8 @@ class CentroidFollowNode(Node):
         self.speed_max = float(p('speed_max').value)
         self.speed_min = float(p('speed_min').value)
         self.speed_step = float(p('speed_step').value)
+        self.brake_step = float(p('brake_step').value)
+        self.brake_scale = bool(p('brake_scale').value)
         self.target_threshold_frac = float(p('target_threshold_frac').value)
         self.confidence_frac = float(p('confidence_frac').value)
         self._throttle = self.speed_min      # 원본: THROTTLE_INITIAL = THROTTLE_MIN
@@ -275,8 +289,15 @@ class CentroidFollowNode(Node):
             steer = -self.steer_sign * out * MAX_STEER
             self._steer_cmd = max(-MAX_STEER, min(MAX_STEER, steer))
 
-            # A. 코너다 -> 감속
-            self._throttle = max(self.speed_min, self._throttle - self.speed_step)
+            # A. 코너다 -> 감속. 오차가 클수록(깊은 코너) 많이 줄인다.
+            # 고정량이면 완만한 커브에서도 과하게 느려지고, 급커브에서는
+            # 감속이 모자라 코너를 지나친 뒤에야 느려진다.
+            drop = self.brake_step
+            if self.brake_scale:
+                dead = self.target_threshold_frac * roi_w
+                over = (err_px - dead) / max(1.0, (roi_w * 0.5) - dead)
+                drop *= min(1.0, max(0.15, over))
+            self._throttle = max(self.speed_min, self._throttle - drop)
         else:
             # 직선이다 -> 가속. 조향은 그대로 둔다(불감대 안).
             self._throttle = min(self.speed_max, self._throttle + self.speed_step)
