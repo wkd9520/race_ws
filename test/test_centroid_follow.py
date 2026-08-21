@@ -163,6 +163,39 @@ check('C 선을 놓쳐도 조향 유지', abs(nc._steer_cmd - s_before) < 1e-9,
 check('C 속도도 유지 (정지하지 않는다)', nc._speed_cmd == v_before,
       '(%.2f -> %.2f)' % (v_before, nc._speed_cmd))
 
+print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
+# 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에
+# 그대로 쓰면 화면 끝에서도 8도(240p 면 4도)까지밖에 안 나온다 -- 코너에서
+# 조향이 부족한 직접 원인이었다. 화면 반폭으로 정규화하면 해결된다.
+
+
+def steer_at(w, h, mid):
+    hsv = np.zeros((h, w, 3), np.uint8)
+    hsv[:, :] = (106, 113, 73)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    if mid is not None:
+        m = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
+        t = max(3, w // 64)
+        for y in range(int(h * 0.40), h, 40):
+            x = int(w * mid)
+            bgr[y:y + 22, max(0, x - t):x + t] = m
+    nn = cf.CentroidFollowNode()
+    nn.on_image(ros_stubs.Image(cv=bgr))
+    return nn._steer_cmd
+
+
+s_edge = steer_at(640, 480, 0.05)
+s_half = steer_at(640, 480, 0.35)
+check('화면 끝에서 최대 조향', abs(s_edge) > cf.MAX_STEER * 0.95,
+      '(%.1f도)' % math.degrees(s_edge))
+check('중간에서는 중간값', math.radians(3) < abs(s_half) < cf.MAX_STEER * 0.7,
+      '(%.1f도)' % math.degrees(s_half))
+
+s_edge_240 = steer_at(320, 240, 0.05)
+check('해상도가 달라도 같은 조향', abs(s_edge - s_edge_240) < math.radians(0.5),
+      '(640p %.1f도 / 240p %.1f도)'
+      % (math.degrees(s_edge), math.degrees(s_edge_240)))
+
 print('\n' + '=' * 58)
 if FAILS:
     print('실패 %d건: %s' % (len(FAILS), ', '.join(FAILS)))

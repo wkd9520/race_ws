@@ -109,8 +109,15 @@ class CentroidFollowNode(Node):
         self.declare_parameter('width_min_frac', 0.012)
         self.declare_parameter('width_max_frac', 0.06)
 
-        # --- PID (원본 기본값) ---
-        self.declare_parameter('kp', 0.5)
+        # --- PID ---
+        # 원본 errorNormalize = 1/400 은 800px 폭 카메라 기준이다(화면 반폭).
+        # 우리 카메라는 640 또는 320px 이라 그대로 쓰면 같은 '화면 끝'이어도
+        # 오차 픽셀 수가 절반 이하가 되고, 조향이 8도(240p 면 4도)까지밖에
+        # 안 나온다. 최대 조향을 내려면 800px 오차가 필요한데 불가능하다.
+        #
+        # 화면 반폭으로 정규화하면 해상도와 무관하게 '화면 끝 = 오차 1.0' 이 된다.
+        # kp 도 그에 맞춰 올린다(원본 0.5 는 위 정규화와 짝이었다).
+        self.declare_parameter('kp', 1.2)
         self.declare_parameter('ki', 0.0)
         self.declare_parameter('kd', 0.0)
         self.declare_parameter('steer_sign', 1.0)
@@ -161,9 +168,11 @@ class CentroidFollowNode(Node):
         self.publish_debug = bool(p('publish_debug').value)
         self.log_period = 1.0 / max(0.1, float(p('log_hz').value))
 
+        # err_norm 은 첫 프레임에서 ROI 폭을 보고 확정한다(아래 on_image).
         self.pid = PIDController(kp=float(p('kp').value),
                                  ki=float(p('ki').value),
                                  kd=float(p('kd').value))
+        self._norm_set = False
 
         self.bridge = CvBridge()
         self._speed_cmd = 0.0
@@ -225,6 +234,14 @@ class CentroidFollowNode(Node):
         x1 = max(x0 + 4, int(w * self.roi_right))
         roi = bgr[y0:y1, x0:x1]
         roi_w = roi.shape[1]
+
+        # 화면 반폭으로 정규화 -- 해상도가 달라도 '화면 끝 = 오차 1.0'
+        if not self._norm_set:
+            self.pid.errorNormalize = 1.0 / max(1.0, roi_w * 0.5)
+            self._norm_set = True
+            self.get_logger().info(
+                'PID 정규화 확정: 1/%.0f (ROI 폭 %d) -- 화면 끝에서 최대 조향'
+                % (roi_w * 0.5, roi_w))
 
         cents, mask = self.find_centroids(roi)
 
