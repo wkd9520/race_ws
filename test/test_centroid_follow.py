@@ -103,7 +103,8 @@ print('\n[3] 조향 한계')
 # 실제로 포화시켜야 한계 검증이 된다. PID 는 노드 생성 시 만들어지므로
 # 속성만 바꾸면 안 먹는다 -- pid 객체를 직접 교체한다.
 nf = cf.CentroidFollowNode()
-nf.pid = cf.PIDController(kp=20.0)
+# 게인은 매 프레임 _kp_base 에서 다시 정해지므로(코너 부스트) 그쪽을 바꾼다
+nf._kp_base = 20.0
 nf.on_image(ros_stubs.Image(cv=scene(0.15)))
 st_far = nf._steer_cmd
 check('큰 오차에서 포화한다 (전제 확인)',
@@ -280,6 +281,59 @@ _, _, st_near_only = drive(0.5, 0.5)
 check('먼 줄은 조향에 안 쓴다', abs(st_far_only - st_near_only) < 1e-9,
       '(%.1f도 = %.1f도)'
       % (math.degrees(st_far_only), math.degrees(st_near_only)))
+
+print('\n[6d] 코너 전용 게인 부스트 - 코너만 세게, 직선은 그대로')
+# 게인을 올리면 코너 추종이 좋아지지만 인지 잡음이 클 때 직선이 떨린다.
+# 그래서 상시로 올리지 않고 코너에서만 올린다.
+
+
+def track_sim(gain_scale, corner=True, noise=0.0, ticks=70):
+    """차량 동역학 근사 - 코너가 차를 밀고, 조향이 되돌린다."""
+    nn = cf.CentroidFollowNode()
+    nn.corner_gain_scale = gain_scale
+    rng = np.random.RandomState(1)
+    x = 0.5
+    errs = []
+    steers = []
+    for t in range(ticks):
+        far = (0.15 if t >= 5 else 0.5) if corner else 0.5
+        xs = min(0.95, max(0.05, x + rng.randn() * noise))
+        nn.on_image(ros_stubs.Image(cv=two_band_scene(xs, far)))
+        st = nn._steer_cmd
+        steers.append(st)
+        drift = (-0.020 if t >= 10 else 0.0) if corner else 0.0
+        x = min(0.95, max(0.05, x + drift + st * 0.09))
+        if t >= 15:
+            errs.append(abs(x - 0.5))
+    jitter = math.degrees(float(np.std(np.diff(steers[20:]))))
+    return sum(errs) / max(1, len(errs)), jitter
+
+
+err_off, _ = track_sim(1.0, corner=True)
+err_on, _ = track_sim(2.2, corner=True)
+check('코너 부스트가 이탈을 줄인다', err_on < err_off * 0.7,
+      '(부스트 없음 %.3f -> 있음 %.3f)' % (err_off, err_on))
+
+# 핵심: 직선 떨림은 늘지 않아야 한다. 상시로 게인을 올리면 여기서 망가진다.
+_, jit_off = track_sim(1.0, corner=False, noise=0.06)
+_, jit_on = track_sim(2.2, corner=False, noise=0.06)
+check('직선 떨림은 거의 그대로 ★', jit_on < jit_off * 1.5,
+      '(%.2f도 -> %.2f도)' % (jit_off, jit_on))
+
+# 부스트가 실제로 코너에서만 켜지는지
+nk = cf.CentroidFollowNode()
+kp_base = nk._kp_base
+for _ in range(6):
+    nk.on_image(ros_stubs.Image(cv=two_band_scene(0.5, 0.5)))   # 직선
+check('직선에서는 기본 게인', abs(nk.pid.kp - kp_base) < 1e-9,
+      '(kp=%.1f)' % nk.pid.kp)
+for _ in range(6):
+    nk.on_image(ros_stubs.Image(cv=two_band_scene(0.15, 0.15)))  # 코너
+check('코너에서는 게인 상승', nk.pid.kp > kp_base * 1.5,
+      '(kp=%.1f -> %.1f)' % (kp_base, nk.pid.kp))
+
+# D 항은 0 이어야 한다 -- 원본 미분기는 prevMeas 가 상수라 잡음만 증폭한다
+check('D 항은 기본 0 (잡음만 증폭)', cf.CentroidFollowNode().pid.kd == 0.0)
 
 print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
 # 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에

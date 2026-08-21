@@ -119,6 +119,9 @@ class CentroidFollowNode(Node):
         # kp 도 그에 맞춰 올린다(원본 0.5 는 위 정규화와 짝이었다).
         self.declare_parameter('kp', 1.2)
         self.declare_parameter('ki', 0.0)
+        # D 항은 0 이 기본이다. 원본 PID 구현의 미분기는 prevMeas 를
+        # current(화면 중앙)로 잡는데, 그건 상수라 변화가 0 이다. 즉 D 를 켜도
+        # 잡음만 증폭한다 -- 시뮬레이션에서 실제로 오차가 커졌다(0.217 -> 0.243).
         self.declare_parameter('kd', 0.0)
         self.declare_parameter('steer_sign', 1.0)
 
@@ -165,6 +168,18 @@ class CentroidFollowNode(Node):
         # 많이 줄인다. 원본은 고정량이라 완만한 커브에서도 과하게 느려졌다.
         self.declare_parameter('brake_scale', True)
 
+        # 코너에서만 게인을 올린다.
+        #
+        # 게인을 올리면 코너 추종이 확실히 좋아진다(시뮬레이션: kp 1.2 -> 3.0 에서
+        # 평균 이탈 0.217 -> 0.101). 하지만 인지 잡음이 클 때 직선이 떨린다
+        # (잡음 0.06 에서 조향 변화 3.0도 -> 11.0도).
+        #
+        # 그래서 상시로 올리지 않고 코너에서만 올린다. 직선은 낮은 게인으로
+        # 안정을 유지하고, 코너에 들어가면 강하게 꺾는다.
+        self.declare_parameter('corner_gain_scale', 2.2)
+        # 코너로 판정할 연속 프레임 수. 한 프레임 튄 것으로 바꾸면 잡음에 흔들린다.
+        self.declare_parameter('corner_enter_frames', 3)
+
         # B. 이만큼 벗어나야 조향을 바꾼다. 원본 TARGET_THRESHOLD=10px(160px 폭 기준).
         # "선 위나 근처에서 너무 예민하게 떠는 걸 막는다"
         self.declare_parameter('target_threshold_frac', 0.06)
@@ -201,6 +216,10 @@ class CentroidFollowNode(Node):
         self.near_band_top = float(p('near_band_top').value)
         self.far_threshold_frac = float(p('far_threshold_frac').value)
         self.far_brake_step = float(p('far_brake_step').value)
+        self.corner_gain_scale = float(p('corner_gain_scale').value)
+        self._kp_base = float(p('kp').value)
+        self.corner_enter_frames = int(p('corner_enter_frames').value)
+        self._corner_run = 0        # 큰 오차가 연속으로 몇 프레임 이어졌나
         self.target_threshold_frac = float(p('target_threshold_frac').value)
         self.confidence_frac = float(p('confidence_frac').value)
         self._throttle = self.speed_min      # 원본: THROTTLE_INITIAL = THROTTLE_MIN
@@ -322,9 +341,25 @@ class CentroidFollowNode(Node):
         target = roi_w / 2.0
         err_px = abs(centroid - target)
 
+        base_dead = self.target_threshold_frac * roi_w
+
+        # 코너 판정: 큰 오차가 연속으로 이어지면 코너로 본다.
+        # 한 프레임 튄 것만으로 바꾸면 잡음에 흔들린다.
+        if err_px > base_dead:
+            self._corner_run += 1
+        else:
+            self._corner_run = 0
+
+        # 코너에서만 게인을 올린다. 직선은 낮은 게인으로 떨림을 막고,
+        # 코너에 들어가면 강하게 꺾는다.
+        dead = base_dead
+        in_corner = self._corner_run >= self.corner_enter_frames
+        self.pid.kp = (self._kp_base * self.corner_gain_scale if in_corner
+                       else self._kp_base)
+
         # B. 불감대 -- 선 근처에서 떨지 않게 한다.
         # 원본: "prevents algorithm from being too twitchy when it is on the line"
-        if err_px > self.target_threshold_frac * roi_w:
+        if err_px > dead:
             # 원본: tickPID(centroid, width/2) -- setpoint 가 centroid 다.
             # error = centroid - 중앙 이므로 선이 오른쪽이면 error 양수.
             # 그때 차는 왼쪽에 있다는 뜻이라 조향은 반대로 나가야 한다.
@@ -337,7 +372,6 @@ class CentroidFollowNode(Node):
             # 감속이 모자라 코너를 지나친 뒤에야 느려진다.
             drop = self.brake_step
             if self.brake_scale:
-                dead = self.target_threshold_frac * roi_w
                 over = (err_px - dead) / max(1.0, (roi_w * 0.5) - dead)
                 drop *= min(1.0, max(0.15, over))
             self._throttle = max(self.speed_min, self._throttle - drop)
@@ -362,7 +396,8 @@ class CentroidFollowNode(Node):
                      self._speed_cmd,
                      '%.0f' % far_err if far_err is not None else '-',
                      ' [선행감속]' if far_slow else '',
-                     len(cents)))
+                     len(cents))
+                  + ('  [코너 kp=%.1f]' % self.pid.kp if in_corner else ''))
 
         if self.pub_dbg is not None:
             self._publish_debug(roi, mask, cents, centroid, msg.header)
