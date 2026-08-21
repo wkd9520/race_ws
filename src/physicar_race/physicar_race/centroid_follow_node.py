@@ -87,8 +87,10 @@ class CentroidFollowNode(Node):
         super().__init__('centroid_follow_node')
 
         # --- ROI (화면 비율. 원본은 픽셀이지만 해상도 독립을 위해 비율로) ---
-        self.declare_parameter('roi_top', 0.55)
-        self.declare_parameter('roi_bottom', 0.92)
+        # 위를 볼수록 먼 곳이라 코너를 미리 본다. donkeycar 는 화면 중간쯤을 본다
+        # (SCAN_Y=100 / 480). 너무 위를 보면 직선에서 불안정해진다.
+        self.declare_parameter('roi_top', 0.45)
+        self.declare_parameter('roi_bottom', 0.80)
         self.declare_parameter('roi_left', 0.0)
         self.declare_parameter('roi_right', 1.0)
 
@@ -113,6 +115,26 @@ class CentroidFollowNode(Node):
         self.declare_parameter('kd', 0.0)
         self.declare_parameter('steer_sign', 1.0)
 
+        # --- 코너 대응 (donkeycar/parts/line_follower.py) ---
+        # 원본은 셋을 함께 쓴다. 서로 보완적이다:
+        #   A 감속   : 오차가 크면 코너로 보고 속도를 낮춘다 (물리적 여유)
+        #   B 불감대 : 선 근처에서 떨지 않게 한다 (게인을 올릴 수 있게 됨)
+        #   C 신뢰도 : 픽셀이 모자라면 조향을 갱신하지 않고 유지한다 (코너에서 버팀)
+
+        # A. 오차가 클 때(코너) 감속, 작을 때(직선) 가속.
+        # 원본 실측: MAX 0.3 / MIN 0.15 / STEP 0.05 -- 코너에서 절반까지 떨어진다.
+        self.declare_parameter('speed_max', 0.6)
+        self.declare_parameter('speed_min', 0.3)
+        self.declare_parameter('speed_step', 0.05)
+
+        # B. 이만큼 벗어나야 조향을 바꾼다. 원본 TARGET_THRESHOLD=10px(160px 폭 기준).
+        # "선 위나 근처에서 너무 예민하게 떠는 걸 막는다"
+        self.declare_parameter('target_threshold_frac', 0.06)
+
+        # C. 마스크 픽셀이 이 비율 미만이면 조향을 갱신하지 않고 이전 값을 유지한다.
+        # 코너에서 선이 잠깐 프레임을 벗어나도 마지막 조향으로 계속 돈다.
+        self.declare_parameter('confidence_frac', 0.002)
+
         self.declare_parameter('speed', 0.5)
         self.declare_parameter('publish_debug', False)
         self.declare_parameter('log_hz', 2.0)
@@ -130,6 +152,12 @@ class CentroidFollowNode(Node):
         self.width_max_frac = float(p('width_max_frac').value)
         self.steer_sign = float(p('steer_sign').value)
         self.speed = float(p('speed').value)
+        self.speed_max = float(p('speed_max').value)
+        self.speed_min = float(p('speed_min').value)
+        self.speed_step = float(p('speed_step').value)
+        self.target_threshold_frac = float(p('target_threshold_frac').value)
+        self.confidence_frac = float(p('confidence_frac').value)
+        self._throttle = self.speed_min      # 원본: THROTTLE_INITIAL = THROTTLE_MIN
         self.publish_debug = bool(p('publish_debug').value)
         self.log_period = 1.0 / max(0.1, float(p('log_hz').value))
 
@@ -200,10 +228,13 @@ class CentroidFollowNode(Node):
 
         cents, mask = self.find_centroids(roi)
 
-        if len(cents) == 0:
-            self._speed_cmd = 0.0
-            self._steer_cmd = 0.0
-            self._log('정지 - 컨투어 없음', warn=True)
+        # C. 신뢰도 -- 마스크 픽셀이 모자라면 조향을 갱신하지 않고 이전 값을 유지한다.
+        # 원본: if confidence >= confidence_threshold: (아니면 아무것도 안 함)
+        # 코너에서 선이 잠깐 프레임을 벗어나도 마지막 조향으로 계속 돈다.
+        confidence = float((mask > 0).sum()) / max(1, mask.size)
+        if len(cents) == 0 or confidence < self.confidence_frac:
+            self._log('선 미검출 (신뢰도 %.4f < %.4f) - 마지막 조향 유지'
+                      % (confidence, self.confidence_frac), warn=True)
             if self.pub_dbg is not None:
                 self._publish_debug(roi, mask, cents, None, msg.header)
             return
@@ -214,18 +245,30 @@ class CentroidFollowNode(Node):
         else:
             centroid = cents[0][0]
 
-        # 원본: tickPID(centroid, width/2) -- setpoint 가 centroid 다.
-        # error = centroid - 중앙 이므로, 선이 오른쪽에 보이면 error 가 양수.
-        # 그때 차는 왼쪽에 있다는 뜻이니 오른쪽으로 꺾어야 한다 -> 부호를 뒤집는다.
-        out = self.pid.tick(centroid, roi_w / 2.0)
+        target = roi_w / 2.0
+        err_px = abs(centroid - target)
 
-        steer = -self.steer_sign * out * MAX_STEER
-        steer = max(-MAX_STEER, min(MAX_STEER, steer))
+        # B. 불감대 -- 선 근처에서 떨지 않게 한다.
+        # 원본: "prevents algorithm from being too twitchy when it is on the line"
+        if err_px > self.target_threshold_frac * roi_w:
+            # 원본: tickPID(centroid, width/2) -- setpoint 가 centroid 다.
+            # error = centroid - 중앙 이므로 선이 오른쪽이면 error 양수.
+            # 그때 차는 왼쪽에 있다는 뜻이라 조향은 반대로 나가야 한다.
+            out = self.pid.tick(centroid, target)
+            steer = -self.steer_sign * out * MAX_STEER
+            self._steer_cmd = max(-MAX_STEER, min(MAX_STEER, steer))
 
-        self._steer_cmd = steer
-        self._speed_cmd = max(MIN_SPEED, self.speed)
-        self._log('centroid=%d/%d  pid=%+.3f  steer=%+.1f도  (컨투어 %d개)'
-                  % (centroid, roi_w, out, np.degrees(steer), len(cents)))
+            # A. 코너다 -> 감속
+            self._throttle = max(self.speed_min, self._throttle - self.speed_step)
+        else:
+            # 직선이다 -> 가속. 조향은 그대로 둔다(불감대 안).
+            self._throttle = min(self.speed_max, self._throttle + self.speed_step)
+
+        self._speed_cmd = max(MIN_SPEED, self._throttle)
+        self._log('centroid=%d/%d  err=%.0fpx  steer=%+.1f도  spd=%.2f  '
+                  'conf=%.4f  (컨투어 %d개)'
+                  % (centroid, roi_w, err_px, np.degrees(self._steer_cmd),
+                     self._speed_cmd, confidence, len(cents)))
 
         if self.pub_dbg is not None:
             self._publish_debug(roi, mask, cents, centroid, msg.header)

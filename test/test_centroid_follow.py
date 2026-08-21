@@ -52,7 +52,7 @@ def scene(mid_x=0.35, body=True, shoulder=True):
         bgr[int(H * 0.88):, int(W * 0.85):] = b
     if mid_x:
         m = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
-        for y in range(int(H * 0.58), H, 40):
+        for y in range(int(H * 0.40), H, 40):
             bgr[y:y + 22, int(W * mid_x) - 5:int(W * mid_x) + 5] = m
     return bgr
 
@@ -111,9 +111,11 @@ check('큰 오차에서 포화한다 (전제 확인)',
 check('한계 안 (±20도)', abs(st_far) <= cf.MAX_STEER + 1e-9,
       '(%.1f도)' % math.degrees(st_far))
 
-print('\n[4] 선이 없으면 정지')
+print('\n[4] 처음부터 선이 없으면 안 움직인다')
+# C(신뢰도) 도입 후 계약이 바뀌었다. 달리던 중 놓치면 '유지'지만,
+# 한 번도 못 봤으면 초기값(0) 그대로라 움직이지 않는다.
 st, sp = run(None)
-check('컨투어 없음 -> 정지', sp == 0.0, '(speed %.2f)' % sp)
+check('한 번도 못 보면 정지 상태', sp == 0.0, '(speed %.2f)' % sp)
 check('  조향도 0', st == 0.0, '(%.1f도)' % math.degrees(st))
 
 print('\n[5] PID 는 원본 그대로')
@@ -123,6 +125,43 @@ o2 = cf.PIDController(kp=0.5).tick(100, 200)   # setpoint 가 왼쪽
 check('setpoint 가 크면 출력 양수', o1 > 0, '(%.3f)' % o1)
 check('setpoint 가 작으면 출력 음수', o2 < 0, '(%.3f)' % o2)
 check('출력이 ±1 안', abs(o1) <= 1.0 and abs(o2) <= 1.0)
+
+print('\n[6] 코너 대응 - donkeycar/parts/line_follower.py')
+
+# A. 오차가 크면(코너) 감속, 작으면(직선) 가속
+na = cf.CentroidFollowNode()
+for _ in range(8):
+    na.on_image(ros_stubs.Image(cv=scene(0.50)))     # 직선
+v_straight = na._speed_cmd
+for _ in range(8):
+    na.on_image(ros_stubs.Image(cv=scene(0.15)))     # 큰 오차 = 코너
+v_corner = na._speed_cmd
+check('A 직선에서 가속', v_straight > na.speed_min, '(%.2f)' % v_straight)
+check('A 코너에서 감속', v_corner < v_straight,
+      '(%.2f -> %.2f)' % (v_straight, v_corner))
+check('  하한을 안 넘는다', v_corner >= na.speed_min - 1e-9, '(%.2f)' % v_corner)
+
+# B. 불감대 -- 선 근처에서 조향을 안 바꾼다
+nb = cf.CentroidFollowNode()
+nb.on_image(ros_stubs.Image(cv=scene(0.50)))
+s_mid = nb._steer_cmd
+nb.on_image(ros_stubs.Image(cv=scene(0.52)))         # 아주 조금 벗어남
+check('B 불감대 안에서는 조향 고정', abs(nb._steer_cmd - s_mid) < 1e-9,
+      '(%.2f -> %.2f도)' % (math.degrees(s_mid), math.degrees(nb._steer_cmd)))
+nb.on_image(ros_stubs.Image(cv=scene(0.20)))         # 크게 벗어남
+check('B 불감대 밖에서는 반응', abs(nb._steer_cmd) > math.radians(1),
+      '(%.1f도)' % math.degrees(nb._steer_cmd))
+
+# C. 신뢰도 -- 달리던 중 선을 놓쳐도 마지막 조향 유지 (예전엔 정지했다)
+nc = cf.CentroidFollowNode()
+for _ in range(5):
+    nc.on_image(ros_stubs.Image(cv=scene(0.20)))
+s_before, v_before = nc._steer_cmd, nc._speed_cmd
+nc.on_image(ros_stubs.Image(cv=scene(None)))         # 선 사라짐
+check('C 선을 놓쳐도 조향 유지', abs(nc._steer_cmd - s_before) < 1e-9,
+      '(%.1f -> %.1f도)' % (math.degrees(s_before), math.degrees(nc._steer_cmd)))
+check('C 속도도 유지 (정지하지 않는다)', nc._speed_cmd == v_before,
+      '(%.2f -> %.2f)' % (v_before, nc._speed_cmd))
 
 print('\n' + '=' * 58)
 if FAILS:
