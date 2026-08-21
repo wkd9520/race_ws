@@ -335,6 +335,55 @@ check('코너에서는 게인 상승', nk.pid.kp > kp_base * 1.5,
 # D 항은 0 이어야 한다 -- 원본 미분기는 prevMeas 가 상수라 잡음만 증폭한다
 check('D 항은 기본 0 (잡음만 증폭)', cf.CentroidFollowNode().pid.kd == 0.0)
 
+print('\n[6e] 선 유실 복구 - 90도 코너에서 선이 시야를 벗어날 때')
+# 참조: nsa31/Line-Lane-Follower-Robot_ROS white_yellow_lane_follower_sim.py
+#   else:                    # 선을 못 찾았을 때
+#       linear.x = 0.4       # 평소 0.9 -> 절반 이하로 감속
+#       angular.z = -0.7     # 강하게 회전
+# 90도 코너에서는 선이 시야를 완전히 벗어난다. '마지막 조향 유지'만으로는
+# 못 따라잡는다 -- 진입 직전 조향은 코너를 다 돌기에 모자란 값이다.
+
+
+def corner_exit(lost_recover, approach=(0.5, 0.35, 0.2, 0.1), blind=4):
+    """선이 왼쪽으로 밀리다 시야를 벗어나는 90도 코너."""
+    nn = cf.CentroidFollowNode()
+    nn.lost_recover = lost_recover
+    for x in approach:
+        nn.on_image(ros_stubs.Image(cv=scene(x)))
+    for _ in range(blind):
+        nn.on_image(ros_stubs.Image(cv=scene(None)))
+    return nn._steer_cmd, nn._speed_cmd
+
+
+st_off, v_off = corner_exit(False)
+st_on, v_on = corner_exit(True)
+
+check('선을 잃으면 감속한다', v_on < v_off - 0.05,
+      '(유지 %.2f -> 복구 %.2f)' % (v_off, v_on))
+check('  최대 조향은 유지', abs(st_on) > cf.MAX_STEER * 0.9,
+      '(%.1f도)' % math.degrees(st_on))
+
+# 느려야 그 조향으로 실제로 돌 수 있다
+R_act = 0.18 / math.tan(abs(st_on))
+check('  느려진 만큼 횡가속 여유가 생긴다', (v_on ** 2) / R_act < 0.5,
+      '(%.2f m/s, 횡가속 %.2f)' % (v_on, v_on ** 2 / R_act))
+
+# 방향: 마지막으로 본 선이 왼쪽이었으면 좌회전
+check('마지막으로 본 방향으로 꺾는다 (좌)', st_on > 0,
+      '(%.1f도)' % math.degrees(st_on))
+st_r, _ = corner_exit(True, approach=(0.5, 0.65, 0.8, 0.9))
+check('  반대쪽도 마찬가지 (우)', st_r < 0, '(%.1f도)' % math.degrees(st_r))
+
+# 한두 프레임 튄 것과는 구분해야 한다
+nq = cf.CentroidFollowNode()
+for x in (0.5, 0.5, 0.5):
+    nq.on_image(ros_stubs.Image(cv=scene(x)))
+s_before = nq._steer_cmd
+nq.on_image(ros_stubs.Image(cv=scene(None)))     # 딱 1프레임만 놓침
+check('1프레임 유실은 복구 조향을 안 건다',
+      abs(nq._steer_cmd - s_before) < 1e-9,
+      '(%.1f도 유지)' % math.degrees(nq._steer_cmd))
+
 print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
 # 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에
 # 그대로 쓰면 화면 끝에서도 8도(240p 면 4도)까지밖에 안 나온다 -- 코너에서

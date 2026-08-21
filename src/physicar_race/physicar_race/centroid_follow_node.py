@@ -27,6 +27,8 @@ ROS + OpenCV + 서보 조향). 실제로 트랙을 도는 코드이고, **내가
 목표는 화면 중앙(width/2)이다. 별도 target 개념이 없다.
 """
 
+import math
+
 import cv2
 import numpy as np
 import rclpy
@@ -184,6 +186,31 @@ class CentroidFollowNode(Node):
         # "선 위나 근처에서 너무 예민하게 떠는 걸 막는다"
         self.declare_parameter('target_threshold_frac', 0.06)
 
+        # --- 선 유실 복구 (90도 코너) ---
+        # 참조: nsa31/Line-Lane-Follower-Robot_ROS
+        #       white_yellow_lane_follower_sim.py 의 else 분기
+        #
+        #   else:                          # 선을 못 찾았을 때
+        #       linear.x = 0.4             # 평소 0.9 -> 0.4 로 감속
+        #       angular.z = -0.7           # 강하게 회전
+        #
+        # 90도 코너에서는 선이 시야를 완전히 벗어난다. 그때 '마지막 조향 유지'
+        # 만으로는 못 따라잡는다 -- 코너 진입 직전 조향은 코너를 다 돌기에
+        # 모자란 값이기 때문이다. 감속하면서 마지막 오차 방향으로 더 강하게
+        # 꺾어야 한다.
+        #
+        # 방향은 마지막으로 본 선이 어느 쪽이었는지로 정한다. 웹 자료들이
+        # 공통으로 말하는 원리이기도 하다 -- "오른쪽으로 돌다 놓쳤으면 더
+        # 오른쪽으로".
+        self.declare_parameter('lost_recover', True)
+        self.declare_parameter('lost_steer_frac', 1.0)    # 최대조향 대비
+        # 원본은 0.9 -> 0.4 로 절반 이하까지 떨어뜨린다. 선을 못 보는 동안은
+        # 느릴수록 안전하고, 느려야 최대 조향으로 실제로 돌 수 있다.
+        # (반경 0.495m 에서 0.25 m/s 면 횡가속 0.13 -- 여유가 크다)
+        self.declare_parameter('lost_speed', 0.25)
+        # 이만큼 연속으로 놓쳐야 복구 조향을 건다. 한두 프레임 튄 것과 구분.
+        self.declare_parameter('lost_enter_frames', 2)
+
         # C. 마스크 픽셀이 이 비율 미만이면 조향을 갱신하지 않고 이전 값을 유지한다.
         # 코너에서 선이 잠깐 프레임을 벗어나도 마지막 조향으로 계속 돈다.
         self.declare_parameter('confidence_frac', 0.002)
@@ -216,6 +243,12 @@ class CentroidFollowNode(Node):
         self.near_band_top = float(p('near_band_top').value)
         self.far_threshold_frac = float(p('far_threshold_frac').value)
         self.far_brake_step = float(p('far_brake_step').value)
+        self.lost_recover = bool(p('lost_recover').value)
+        self.lost_steer_frac = float(p('lost_steer_frac').value)
+        self.lost_speed = float(p('lost_speed').value)
+        self.lost_enter_frames = int(p('lost_enter_frames').value)
+        self._lost_run = 0          # 연속으로 놓친 프레임 수
+        self._last_side = 0.0       # 마지막으로 본 선의 방향 (+왼쪽 / -오른쪽)
         self.corner_gain_scale = float(p('corner_gain_scale').value)
         self._kp_base = float(p('kp').value)
         self.corner_enter_frames = int(p('corner_enter_frames').value)
@@ -326,11 +359,31 @@ class CentroidFollowNode(Node):
         # 코너에서 선이 잠깐 프레임을 벗어나도 마지막 조향으로 계속 돈다.
         confidence = float((mask > 0).sum()) / max(1, mask.size)
         if len(cents) == 0 or confidence < self.confidence_frac:
-            self._log('선 미검출 (신뢰도 %.4f < %.4f) - 마지막 조향 유지'
-                      % (confidence, self.confidence_frac), warn=True)
+            self._lost_run += 1
+
+            # 90도 코너: 선이 시야를 완전히 벗어났다. 마지막 조향을 유지하는
+            # 것만으로는 못 따라잡는다 -- 그 값은 코너를 다 돌기에 모자라다.
+            # 감속하면서 마지막으로 본 방향으로 더 강하게 꺾는다.
+            if (self.lost_recover and self._last_side != 0.0
+                    and self._lost_run >= self.lost_enter_frames):
+                steer = math.copysign(self.lost_steer_frac * MAX_STEER,
+                                      self._last_side)
+                self._steer_cmd = self.steer_sign * steer
+                self._speed_cmd = max(MIN_SPEED, self.lost_speed)
+                self._log('선 유실 %d프레임 - %s으로 강제 조향 %.1f도, 감속 %.2f'
+                          % (self._lost_run,
+                             '좌' if self._last_side > 0 else '우',
+                             np.degrees(self._steer_cmd), self._speed_cmd),
+                          warn=True)
+            else:
+                self._log('선 미검출 (신뢰도 %.4f < %.4f) - 마지막 조향 유지'
+                          % (confidence, self.confidence_frac), warn=True)
+
             if self.pub_dbg is not None:
                 self._publish_debug(roi, mask, cents, None, msg.header)
             return
+
+        self._lost_run = 0
 
         # 원본: 2개 이상이면 앞의 둘의 중점, 1개면 그것
         if len(cents) >= 2:
@@ -340,6 +393,10 @@ class CentroidFollowNode(Node):
 
         target = roi_w / 2.0
         err_px = abs(centroid - target)
+
+        # 선을 놓쳤을 때 어느 쪽으로 꺾을지 정하려면 마지막 방향을 알아야 한다.
+        # + = 선이 왼쪽에 있었다(좌회전 방향)
+        self._last_side = float(target - centroid)
 
         base_dead = self.target_threshold_frac * roi_w
 
