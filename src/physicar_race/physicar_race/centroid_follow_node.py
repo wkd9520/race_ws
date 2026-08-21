@@ -128,6 +128,25 @@ class CentroidFollowNode(Node):
         #   B 불감대 : 선 근처에서 떨지 않게 한다 (게인을 올릴 수 있게 됨)
         #   C 신뢰도 : 픽셀이 모자라면 조향을 갱신하지 않고 유지한다 (코너에서 버팀)
 
+        # --- 선행 스캔 (90도 코너 대응) ---
+        # 감속을 '오차가 커진 뒤'에 시작하면 이미 코너 안이다. 1.2 m/s 로
+        # 진입하면 필요 횡가속이 2.91 m/s² 라 물리적으로 못 돈다(최소 반경 0.495m).
+        #
+        # 그래서 스캔을 둘로 나눈다:
+        #   가까운 줄 -> 조향  (지금 어디 있나)
+        #   먼 줄     -> 감속  (앞에 뭐가 오나)
+        # 먼 줄의 오차가 커지면 아직 직진 중이어도 미리 줄인다.
+        self.declare_parameter('lookahead_enable', True)
+        # 먼 줄의 위치(ROI 상단부 비율). 0 이면 ROI 맨 위.
+        self.declare_parameter('far_band_top', 0.0)
+        self.declare_parameter('far_band_height', 0.35)
+        # 가까운 줄(조향용)은 ROI 하단부를 쓴다.
+        self.declare_parameter('near_band_top', 0.45)
+        # 먼 줄 오차가 이 비율을 넘으면 코너가 온다고 본다
+        self.declare_parameter('far_threshold_frac', 0.10)
+        # 선행 감속 강도 (먼 줄 기준). 조향은 안 건드린다.
+        self.declare_parameter('far_brake_step', 0.25)
+
         # A. 오차가 클 때(코너) 감속, 작을 때(직선) 가속.
         # 원본 실측: MAX 0.3 / MIN 0.15 / STEP 0.05 -- 코너에서 절반까지 떨어진다.
         # 물리 한계: 최소 회전반경 R = 0.18/tan(20°) = 0.495m.
@@ -176,6 +195,12 @@ class CentroidFollowNode(Node):
         self.speed_step = float(p('speed_step').value)
         self.brake_step = float(p('brake_step').value)
         self.brake_scale = bool(p('brake_scale').value)
+        self.lookahead_enable = bool(p('lookahead_enable').value)
+        self.far_band_top = float(p('far_band_top').value)
+        self.far_band_height = float(p('far_band_height').value)
+        self.near_band_top = float(p('near_band_top').value)
+        self.far_threshold_frac = float(p('far_threshold_frac').value)
+        self.far_brake_step = float(p('far_brake_step').value)
         self.target_threshold_frac = float(p('target_threshold_frac').value)
         self.confidence_frac = float(p('confidence_frac').value)
         self._throttle = self.speed_min      # 원본: THROTTLE_INITIAL = THROTTLE_MIN
@@ -257,7 +282,25 @@ class CentroidFollowNode(Node):
                 'PID 정규화 확정: 1/%.0f (ROI 폭 %d) -- 화면 끝에서 최대 조향'
                 % (roi_w * 0.5, roi_w))
 
-        cents, mask = self.find_centroids(roi)
+        # 조향용 가까운 줄 (ROI 하단부)
+        rh = roi.shape[0]
+        near = roi[int(rh * self.near_band_top):, :]
+        cents, mask = self.find_centroids(near)
+
+        # 감속용 먼 줄 (ROI 상단부). 조향에는 절대 안 쓴다 --
+        # 먼 곳은 부정확해서 조향에 넣으면 오히려 불안정해진다.
+        far_err = None
+        if self.lookahead_enable:
+            f0 = int(rh * self.far_band_top)
+            f1 = max(f0 + 4, int(rh * (self.far_band_top + self.far_band_height)))
+            far = roi[f0:f1, :]
+            far_cents, _ = self.find_centroids(far)
+            if far_cents:
+                if len(far_cents) >= 2:
+                    fx = 0.5 * (far_cents[0][0] + far_cents[1][0])
+                else:
+                    fx = far_cents[0][0]
+                far_err = abs(fx - roi_w / 2.0)
 
         # C. 신뢰도 -- 마스크 픽셀이 모자라면 조향을 갱신하지 않고 이전 값을 유지한다.
         # 원본: if confidence >= confidence_threshold: (아니면 아무것도 안 함)
@@ -302,11 +345,24 @@ class CentroidFollowNode(Node):
             # 직선이다 -> 가속. 조향은 그대로 둔다(불감대 안).
             self._throttle = min(self.speed_max, self._throttle + self.speed_step)
 
+        # 선행 감속 -- 먼 곳에 코너가 보이면 지금 직진 중이어도 미리 줄인다.
+        # 조향은 그대로 두고 속도만 건드리므로 직선 안정성은 유지된다.
+        far_slow = False
+        if far_err is not None and far_err > self.far_threshold_frac * roi_w:
+            over = (far_err - self.far_threshold_frac * roi_w) / max(
+                1.0, (roi_w * 0.5) - self.far_threshold_frac * roi_w)
+            drop = self.far_brake_step * min(1.0, max(0.2, over))
+            self._throttle = max(self.speed_min, self._throttle - drop)
+            far_slow = True
+
         self._speed_cmd = max(MIN_SPEED, self._throttle)
-        self._log('centroid=%d/%d  err=%.0fpx  steer=%+.1f도  spd=%.2f  '
-                  'conf=%.4f  (컨투어 %d개)'
+        self._log('centroid=%d/%d  err=%.0f  steer=%+.1f도  spd=%.2f  '
+                  'far=%s%s  (컨투어 %d개)'
                   % (centroid, roi_w, err_px, np.degrees(self._steer_cmd),
-                     self._speed_cmd, confidence, len(cents)))
+                     self._speed_cmd,
+                     '%.0f' % far_err if far_err is not None else '-',
+                     ' [선행감속]' if far_slow else '',
+                     len(cents)))
 
         if self.pub_dbg is not None:
             self._publish_debug(roi, mask, cents, centroid, msg.header)

@@ -181,8 +181,21 @@ def speed_after(mid, straight_ticks=40, corner_ticks=15):
 
 
 v_straight = speed_after(None)
-v_gentle = speed_after(0.40)
-v_sharp = speed_after(0.12)
+# 이 scene() 은 ROI 전체에 같은 위치로 그리므로 먼 줄도 함께 꺾인 것으로 읽힌다.
+# 그러면 선행 감속까지 겹쳐 완만/급 둘 다 하한에 닿아 비교가 안 된다.
+# 여기서는 '오차 비례 감속'만 보려는 것이므로 선행 스캔을 끄고 잰다.
+def speed_no_lookahead(mid, straight_ticks=40, corner_ticks=15):
+    nn = cf.CentroidFollowNode()
+    nn.lookahead_enable = False
+    for _ in range(straight_ticks):
+        nn.on_image(ros_stubs.Image(cv=scene(0.50)))
+    for _ in range(corner_ticks):
+        nn.on_image(ros_stubs.Image(cv=scene(mid)))
+    return nn._speed_cmd
+
+
+v_gentle = speed_no_lookahead(0.40)
+v_sharp = speed_no_lookahead(0.12)
 
 check('직선에서 speed_max 까지 가속', v_straight > 1.0,
       '(%.2f m/s)' % v_straight)
@@ -202,6 +215,71 @@ while nb2._throttle > nb2.speed_min + 0.05 and ticks < 100:
     ticks += 1
 check('급커브 감속이 빠르다 (30Hz 기준 0.5초 안)', ticks < 15,
       '(%d프레임 = %.2f초)' % (ticks, ticks / 30.0))
+
+print('\n[6c] 선행 스캔 - 코너를 미리 보고 감속하는가 (90도 코너 대응)')
+# 감속을 '오차가 커진 뒤'에 시작하면 이미 코너 안이다. 1.2 m/s 로 진입하면
+# 필요 횡가속이 2.91 m/s² 라 물리적으로 못 돈다(최소 반경 0.495m).
+# 먼 줄을 따로 보고, 아직 직진 중이어도 미리 줄여야 한다.
+
+
+def two_band_scene(near_x=0.5, far_x=None):
+    """ROI 안에서 가까운 줄과 먼 줄의 선 위치를 따로 준다."""
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:, :] = (106, 113, 73)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    m = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
+    r0, r1 = int(H * 0.45), int(H * 0.80)
+    rh = r1 - r0
+
+    def draw(x, y0, y1):
+        for y in range(y0, y1, 40):
+            xi = int(W * x)
+            if 5 <= xi < W - 5:
+                bgr[y:y + 22, xi - 5:xi + 5] = m
+
+    draw(far_x if far_x is not None else near_x, r0, r0 + int(rh * 0.35))
+    draw(near_x, r0 + int(rh * 0.45), r1)
+    return bgr
+
+
+def drive(near_x, far_x, ticks=25):
+    nn = cf.CentroidFollowNode()
+    for _ in range(40):                       # 직선에서 가속
+        nn.on_image(ros_stubs.Image(cv=two_band_scene(0.5, 0.5)))
+    v0 = nn._speed_cmd
+    for _ in range(ticks):
+        nn.on_image(ros_stubs.Image(cv=two_band_scene(near_x, far_x)))
+    return v0, nn._speed_cmd, nn._steer_cmd
+
+
+v0, v_straight, st_straight = drive(0.5, 0.5)
+check('직선에서는 최고속 유지', v_straight >= v0 - 1e-9,
+      '(%.2f -> %.2f)' % (v0, v_straight))
+
+# 핵심: 가까운 줄은 아직 직선인데 먼 줄에 코너가 보이는 상황
+_, v_ahead, st_ahead = drive(0.5, 0.15)
+check('앞에 코너가 보이면 미리 감속 ★', v_ahead < v0 - 0.2,
+      '(%.2f -> %.2f)' % (v0, v_ahead))
+check('  그때 조향은 아직 직진', abs(math.degrees(st_ahead)) < 2.0,
+      '(%.1f도)' % math.degrees(st_ahead))
+check('  감속 후 90도 코너가 물리적으로 가능', (v_ahead ** 2) / R_MIN < 1.5,
+      '(%.2f m/s, 횡가속 %.2f)' % (v_ahead, v_ahead ** 2 / R_MIN))
+
+# 감속 없이 그 속도로 진입하면 불가능하다는 것 -- 전제 확인
+check('  선행 감속이 없었다면 불가능했다 (전제 확인)',
+      (v0 ** 2) / R_MIN > 2.0,
+      '(%.2f m/s 였다면 횡가속 %.2f)' % (v0, v0 ** 2 / R_MIN))
+
+_, v_in, st_in = drive(0.2, 0.12)
+check('코너 진입하면 조향도 반응', abs(math.degrees(st_in)) > 5.0,
+      '(%.1f도)' % math.degrees(st_in))
+
+# 먼 줄은 조향에 쓰지 않는다 -- 먼 곳은 부정확해서 넣으면 불안정해진다
+_, _, st_far_only = drive(0.5, 0.15)
+_, _, st_near_only = drive(0.5, 0.5)
+check('먼 줄은 조향에 안 쓴다', abs(st_far_only - st_near_only) < 1e-9,
+      '(%.1f도 = %.1f도)'
+      % (math.degrees(st_far_only), math.degrees(st_near_only)))
 
 print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
 # 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에
