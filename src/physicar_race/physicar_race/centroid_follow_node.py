@@ -90,8 +90,17 @@ class CentroidFollowNode(Node):
 
         # --- ROI (화면 비율. 원본은 픽셀이지만 해상도 독립을 위해 비율로) ---
         # 위를 볼수록 먼 곳이라 코너를 미리 본다. donkeycar 는 화면 중간쯤을 본다
-        # (SCAN_Y=100 / 480). 너무 위를 보면 직선에서 불안정해진다.
-        self.declare_parameter('roi_top', 0.45)
+        # (SCAN_Y=100 / 480).
+        #
+        # 0.45 -> 0.35 로 올렸다. 측정 결과 코너를 훨씬 일찍 감지하는데
+        # 직선 속도와 떨림은 그대로였다:
+        #   roi_top 0.45: 코너중간 1.20 (감속 안 함)
+        #   roi_top 0.40: 코너중간 1.08
+        #   roi_top 0.35: 코너중간 0.86
+        #   roi_top 0.30: 코너중간 0.45
+        # 0.30 이 더 좋아 보이지만 실차에서 하늘이 들어올 여지를 남긴다.
+        # 하늘/배경이 안 잡히면 더 올려도 된다.
+        self.declare_parameter('roi_top', 0.35)
         self.declare_parameter('roi_bottom', 0.80)
         self.declare_parameter('roi_left', 0.0)
         self.declare_parameter('roi_right', 1.0)
@@ -466,10 +475,13 @@ class CentroidFollowNode(Node):
             far = roi[f0:f1, :]
             far_cents, _, _ = self.find_centroids(far)
             if far_cents:
-                if len(far_cents) >= 2:
-                    fx = 0.5 * (far_cents[0][0] + far_cents[1][0])
-                else:
-                    fx = far_cents[0][0]
+                # 가장 '먼'(화면에서 가장 위) 컨투어를 쓴다.
+                #
+                # 앞의 둘을 평균내면 안 된다. 코너에서 선이 휘면 여러 조각으로
+                # 잡히는데, 그중 아무 둘이나 평균내면 휜 정보가 상쇄돼 중심이
+                # 화면 한가운데로 나온다(측정: 코너인데 오차 1px).
+                # 그러면 선행 감속이 아예 안 걸린다.
+                fx = min(far_cents, key=lambda c: c[1])[0]
                 far_err = abs(fx - roi_w / 2.0)
 
         # C. 신뢰도 -- 마스크 픽셀이 모자라면 조향을 갱신하지 않고 이전 값을 유지한다.

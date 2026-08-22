@@ -411,12 +411,17 @@ print('\n[6f] 직선 피팅 - 90도 코너(수평선)에서 조향이 발산하�
 
 
 def angled_line(angle_deg, cx_frac=0.5):
-    """angle_deg: 0=수직(직선 주행), 90=수평(90도 코너 진입)."""
+    """angle_deg: 0=수직(직선 주행), 90=수평(90도 코너 진입).
+
+    선을 그리는 구간은 노드의 ROI 설정을 따라간다. 값을 고정하면 ROI 를
+    바꿀 때마다 테스트가 엉뚱하게 깨진다.
+    """
+    _n = cf.CentroidFollowNode()
     hsv = np.zeros((H, W, 3), np.uint8)
     hsv[:, :] = (106, 113, 73)
     bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
     m = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
-    r0, r1 = int(H * 0.45), int(H * 0.80)
+    r0, r1 = int(H * _n.roi_top), int(H * _n.roi_bottom)
     cx, cy = W * cx_frac, (r0 + r1) / 2
     th = math.radians(angle_deg)
     for t in np.arange(-300, 300, 2.0):
