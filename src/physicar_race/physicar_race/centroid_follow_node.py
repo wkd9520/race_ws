@@ -144,6 +144,30 @@ class CentroidFollowNode(Node):
         #   가까운 줄 -> 조향  (지금 어디 있나)
         #   먼 줄     -> 감속  (앞에 뭐가 오나)
         # 먼 줄의 오차가 커지면 아직 직진 중이어도 미리 줄인다.
+        # --- 가중 다중 ROI (기본 꺼짐) ---
+        # 참조: DIY Robocars OpenMV Racer
+        #   ROIS = [(38,1,90,38, 0.4),      # 위    화면 0.01~0.33, 가로 0.24~0.80
+        #           (35,40,109,43, 0.2),    # 중간  화면 0.33~0.69, 가로 0.22~0.90
+        #           (0,79,160,41, 0.6)]     # 아래  화면 0.66~1.00, 가로 전체
+        #   "각 ROI 에서 가장 큰 블롭의 중심을 찾고, 그 x 를 가중 평균한다"
+        #
+        # 지금 우리는 가까운 줄 하나로만 조향한다. 먼 구간이 조향에 기여하면
+        # 코너를 미리 반영하게 된다 -- 인지가 좋아져 제어가 따라오는 구조다.
+        #
+        # 원본에서 눈여겨볼 점: 위로 갈수록 가로를 좁게 본다. 먼 곳은 원근
+        # 때문에 화면 중앙에만 나타나므로, 가장자리를 자르면 갓길·배경
+        # 오검출이 줄어든다. 우리가 갓길로 고생한 지점이다.
+        #
+        # 실차에서 켜고 끄며 비교하려고 기본은 꺼둔다.
+        self.declare_parameter('weighted_rois', False)
+        # 세 구간의 ROI 내 세로 위치 (위/중간/아래 시작점)
+        self.declare_parameter('wroi_tops', [0.0, 0.33, 0.66])
+        self.declare_parameter('wroi_height', 0.32)
+        # 가중치. 원본은 아래 0.6 > 위 0.4 > 중간 0.2 다.
+        self.declare_parameter('wroi_weights', [0.4, 0.2, 0.6])
+        # 가로 반폭 (화면 중심 기준). 위로 갈수록 좁게 -- 원근 보정.
+        self.declare_parameter('wroi_halfwidths', [0.28, 0.34, 0.50])
+
         self.declare_parameter('lookahead_enable', True)
         # 먼 줄의 위치(ROI 상단부 비율). 0 이면 ROI 맨 위.
         self.declare_parameter('far_band_top', 0.0)
@@ -264,6 +288,11 @@ class CentroidFollowNode(Node):
         self.speed_step = float(p('speed_step').value)
         self.brake_step = float(p('brake_step').value)
         self.brake_scale = bool(p('brake_scale').value)
+        self.weighted_rois = bool(p('weighted_rois').value)
+        self.wroi_tops = [float(v) for v in p('wroi_tops').value]
+        self.wroi_height = float(p('wroi_height').value)
+        self.wroi_weights = [float(v) for v in p('wroi_weights').value]
+        self.wroi_halfwidths = [float(v) for v in p('wroi_halfwidths').value]
         self.lookahead_enable = bool(p('lookahead_enable').value)
         self.far_band_top = float(p('far_band_top').value)
         self.far_band_height = float(p('far_band_height').value)
@@ -400,6 +429,53 @@ class CentroidFollowNode(Node):
         err = (x_at_cy - half) / half
         return float(np.clip(err, -self.fit_err_max, self.fit_err_max))
 
+    def weighted_centroid(self, roi):
+        """세 구간의 centroid 를 가중 평균한다. DIY Robocars OpenMV Racer 방식.
+
+        먼 구간이 조향에 기여하므로 코너를 미리 반영한다. 가까운 구간의
+        가중치가 가장 커서 급격한 궤도 변화는 막는다.
+
+        반환: (가중평균 x, 검출된 구간 수, 구간별 (x, 가중치, 반폭))
+        """
+        rh, rw = roi.shape[:2]
+        cx = rw * 0.5
+        total_w = 0.0
+        acc = 0.0
+        found = 0
+        detail = []
+
+        for i, top in enumerate(self.wroi_tops):
+            weight = (self.wroi_weights[i] if i < len(self.wroi_weights)
+                      else 1.0)
+            half = (self.wroi_halfwidths[i] if i < len(self.wroi_halfwidths)
+                    else 0.5)
+            y0 = max(0, min(rh - 2, int(rh * top)))
+            y1 = max(y0 + 2, min(rh, int(rh * (top + self.wroi_height))))
+            # 위로 갈수록 가로를 좁게 -- 먼 곳은 화면 중앙에만 나타난다
+            x0 = max(0, int(cx - half * rw))
+            x1 = min(rw, int(cx + half * rw))
+            if x1 - x0 < 4:
+                detail.append((None, weight, half))
+                continue
+
+            band = roi[y0:y1, x0:x1]
+            cents, _, _ = self.find_centroids(band)
+            if not cents:
+                detail.append((None, weight, half))
+                continue
+
+            # 원본은 '가장 큰 블롭'을 쓴다. find_centroids 는 면적순이 아니므로
+            # 여러 개면 중앙에 가까운 것을 고른다 -- 갓길 잔재를 피한다.
+            local = min(cents, key=lambda c: abs(c[0] + x0 - cx))[0] + x0
+            acc += local * weight
+            total_w += weight
+            found += 1
+            detail.append((local, weight, half))
+
+        if total_w <= 0.0:
+            return None, 0, detail
+        return acc / total_w, found, detail
+
     def on_image(self, msg: Image):
         try:
             bgr = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
@@ -507,6 +583,15 @@ class CentroidFollowNode(Node):
         else:
             centroid = cents[0][0]
 
+        # 가중 다중 ROI 를 켜면 조향 근거를 이걸로 대체한다.
+        # 먼 구간이 섞여 들어가 코너를 미리 반영한다.
+        wroi_n = 0
+        if self.weighted_rois:
+            wx, wroi_n, _ = self.weighted_centroid(roi)
+            if wx is not None:
+                # roi 좌표계 -> near 좌표계 (둘 다 가로 전체라 x 는 그대로)
+                centroid = int(wx)
+
         target = roi_w / 2.0
         err_px = abs(centroid - target)
 
@@ -573,9 +658,11 @@ class CentroidFollowNode(Node):
             far_slow = True
 
         self._speed_cmd = max(MIN_SPEED, self._throttle)
-        self._log('centroid=%d/%d  err=%.0f  fit=%s  steer=%+.1f도  spd=%.2f  '
+        self._log('centroid=%d/%d%s  err=%.0f  fit=%s  steer=%+.1f도  spd=%.2f  '
                   'far=%s%s  (컨투어 %d개)'
-                  % (centroid, roi_w, err_px,
+                  % (centroid, roi_w,
+                     ('[w%d]' % wroi_n) if self.weighted_rois else '',
+                     err_px,
                      ('%+.2f' % fit_err) if fit_err is not None else '-',
                      np.degrees(self._steer_cmd),
                      self._speed_cmd,

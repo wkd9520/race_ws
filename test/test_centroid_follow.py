@@ -453,6 +453,71 @@ check('기울기에 비례해 커진다', math.radians(2) < abs(s70) < abs(s90_o
       '(70도 %.1f도 < 85도 %.1f도)'
       % (math.degrees(s70), math.degrees(s90_on)))
 
+print('\n[6g] 가중 다중 ROI - 먼 구간이 조향에 기여하는가 (기본 꺼짐)')
+# 참조: DIY Robocars OpenMV Racer
+#   ROIS = [(38,1,90,38,0.4), (35,40,109,43,0.2), (0,79,160,41,0.6)]
+#   "각 ROI 에서 가장 큰 블롭의 중심을 찾고, 그 x 를 가중 평균한다"
+# 지금은 가까운 줄 하나로만 조향한다. 먼 구간이 섞이면 코너를 미리 반영한다.
+
+
+def taper_scene(near_x, far_x=None):
+    """ROI 아래는 near_x, 위는 far_x 위치에 선이 있는 장면."""
+    _n = cf.CentroidFollowNode()
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:, :] = (106, 113, 73)
+    hsv[:, :int(W * 0.09)] = (33, 133, 152)      # 갓길
+    hsv[:, int(W * 0.92):] = (33, 133, 152)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    m = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
+    r0, r1 = int(H * _n.roi_top), int(H * _n.roi_bottom)
+    rh = r1 - r0
+    fx = far_x if far_x is not None else near_x
+    for y in range(r0, r1, 14):
+        f = (y - r0) / rh                 # 0=위(멀리) 1=아래(가까이)
+        x = fx + (near_x - fx) * f
+        xi = int(W * x)
+        if 5 <= xi < W - 5:
+            bgr[y:y + 7, xi - 5:xi + 5] = m
+    return bgr
+
+
+def steer_wroi(near_x, far_x, use):
+    nn = cf.CentroidFollowNode()
+    nn.weighted_rois = use
+    nn.on_image(ros_stubs.Image(cv=taper_scene(near_x, far_x)))
+    return nn._steer_cmd
+
+
+# 핵심: 가까운 곳은 아직 직선인데 먼 곳에 코너가 보이는 상황
+s_off = steer_wroi(0.5, 0.25, False)
+s_on = steer_wroi(0.5, 0.25, True)
+check('앞에 코너가 보이면 미리 꺾는다 ★', abs(s_on) > math.radians(2),
+      '(끔 %.1f도 -> 켬 %.1f도)' % (math.degrees(s_off), math.degrees(s_on)))
+check('  끄면 반응이 없다 (전제 확인)', abs(s_off) < math.radians(1),
+      '(%.1f도)' % math.degrees(s_off))
+
+st_on = steer_wroi(0.5, 0.5, True)
+check('직선에서는 헛반응 없음', abs(st_on) < math.radians(2),
+      '(%.1f도)' % math.degrees(st_on))
+
+# 가로를 위로 갈수록 좁게 보는 것이 갓길을 배제한다
+nw = cf.CentroidFollowNode()
+nw.weighted_rois = True
+img_w = taper_scene(0.5, 0.25)
+roi_w2 = img_w[int(H * nw.roi_top):int(H * nw.roi_bottom), :]
+wx, cnt, detail = nw.weighted_centroid(roi_w2)
+xs_found = [d[0] / roi_w2.shape[1] for d in detail if d[0] is not None]
+check('세 구간 모두 검출', cnt == 3, '(%d개)' % cnt)
+check('  갓길(0.05/0.95)을 안 잡는다',
+      all(0.15 < x < 0.85 for x in xs_found),
+      '(x=%s)' % ['%.2f' % x for x in xs_found])
+check('  위로 갈수록 가로를 좁게 본다',
+      nw.wroi_halfwidths[0] < nw.wroi_halfwidths[-1],
+      '(위 %.2f < 아래 %.2f)'
+      % (nw.wroi_halfwidths[0], nw.wroi_halfwidths[-1]))
+
+check('기본은 꺼져 있다', cf.CentroidFollowNode().weighted_rois is False)
+
 print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
 # 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에
 # 그대로 쓰면 화면 끝에서도 8도(240p 면 4도)까지밖에 안 나온다 -- 코너에서
