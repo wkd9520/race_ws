@@ -90,17 +90,8 @@ class CentroidFollowNode(Node):
 
         # --- ROI (화면 비율. 원본은 픽셀이지만 해상도 독립을 위해 비율로) ---
         # 위를 볼수록 먼 곳이라 코너를 미리 본다. donkeycar 는 화면 중간쯤을 본다
-        # (SCAN_Y=100 / 480).
-        #
-        # 0.45 -> 0.35 로 올렸다. 측정 결과 코너를 훨씬 일찍 감지하는데
-        # 직선 속도와 떨림은 그대로였다:
-        #   roi_top 0.45: 코너중간 1.20 (감속 안 함)
-        #   roi_top 0.40: 코너중간 1.08
-        #   roi_top 0.35: 코너중간 0.86
-        #   roi_top 0.30: 코너중간 0.45
-        # 0.30 이 더 좋아 보이지만 실차에서 하늘이 들어올 여지를 남긴다.
-        # 하늘/배경이 안 잡히면 더 올려도 된다.
-        self.declare_parameter('roi_top', 0.35)
+        # (SCAN_Y=100 / 480). 너무 위를 보면 직선에서 불안정해진다.
+        self.declare_parameter('roi_top', 0.45)
         self.declare_parameter('roi_bottom', 0.80)
         self.declare_parameter('roi_left', 0.0)
         self.declare_parameter('roi_right', 1.0)
@@ -160,9 +151,7 @@ class CentroidFollowNode(Node):
         # 가까운 줄(조향용)은 ROI 하단부를 쓴다.
         self.declare_parameter('near_band_top', 0.45)
         # 먼 줄 오차가 이 비율을 넘으면 코너가 온다고 본다
-        # 더 일찍 감지할수록 코너 진입 전에 속도를 낮출 여유가 생긴다.
-        # 속도를 올렸으니 이쪽도 같이 당겨야 한다.
-        self.declare_parameter('far_threshold_frac', 0.07)
+        self.declare_parameter('far_threshold_frac', 0.10)
         # 선행 감속 강도 (먼 줄 기준). 조향은 안 건드린다.
         self.declare_parameter('far_brake_step', 0.25)
 
@@ -171,12 +160,6 @@ class CentroidFollowNode(Node):
         # 물리 한계: 최소 회전반경 R = 0.18/tan(20°) = 0.495m.
         # 횡가속 a = v²/R 이므로 a_lat 1.5 기준 코너 안전속도는 0.86 m/s.
         # 직선은 반경 제약이 없으므로 max 를 훨씬 높게 잡아도 된다.
-        # 1.6 으로 올렸다가 되돌렸다. 직선 자체는 반경 제약이 없지만, 코너를
-        # 만났을 때 감속이 끝나기 전에 진입해 버린다:
-        #   1.6 -> 0.45 감속에 6프레임(15Hz 기준 0.41m) 필요
-        #   그 사이에 코너에 닿으면 필요 횡가속 5.18 -- 물리적으로 못 돈다
-        # 직선을 더 빠르게 하려면 speed_max 가 아니라 감속 여유(선행 감지
-        # 거리와 brake_step)를 먼저 늘려야 한다.
         self.declare_parameter('speed_max', 1.2)
         self.declare_parameter('speed_min', 0.45)
 
@@ -199,28 +182,11 @@ class CentroidFollowNode(Node):
         # 그래서 상시로 올리지 않고 코너에서만 올린다. 직선은 낮은 게인으로
         # 안정을 유지하고, 코너에 들어가면 강하게 꺾는다.
         self.declare_parameter('corner_gain_scale', 2.2)
-
-        # 속도 비례 게인 보정 -- 기본은 끔.
-        # 같은 조향각이어도 빠르면 회전반경이 커지니 게인을 키워 상쇄한다는
-        # 발상인데, 측정해보니 이득이 없었다:
-        #   코너에서 게인 차이가 미미하고(0.45m/s 2.6 vs 1.2m/s 2.7),
-        #   잡음이 크면 직선이 코너로 오판돼 떨림만 늘었다(3.68도 -> 5.35도).
-        # 실차에서 코너 조향이 모자라면 corner_gain_scale 을 올리는 게 낫다.
-        self.declare_parameter('speed_gain_comp', False)
-        self.declare_parameter('gain_ref_speed', 0.6)
-        self.declare_parameter('gain_comp_max', 2.0)
         # 코너로 판정할 연속 프레임 수. 한 프레임 튄 것으로 바꾸면 잡음에 흔들린다.
-        # 2 로 줄여봤다가 되돌렸다. 코너 진입이 1프레임 빨라지는 대신 잡음이
-        # 직선을 코너로 오판해 떨림이 3.04도 -> 5.38도로 뛰었다.
-        # 측정: 1프레임 5.39도 / 2프레임 3.04~5.38도 / 3프레임 2.45도
         self.declare_parameter('corner_enter_frames', 3)
 
         # B. 이만큼 벗어나야 조향을 바꾼다. 원본 TARGET_THRESHOLD=10px(160px 폭 기준).
         # "선 위나 근처에서 너무 예민하게 떠는 걸 막는다"
-        # 이 값을 0.035 로 줄여봤다가 되돌렸다. 반응 시작 오차가 38px -> 22px 로
-        # 줄지만 실제 지연 차이는 1cm 미만인데, 직선 떨림은 3.04도 -> 4.79도로
-        # 크게 늘었다. 대가만 크고 이득이 없다.
-        # 코너 반응은 불감대가 아니라 게인 부스트와 선행 감속으로 얻는 게 맞다.
         self.declare_parameter('target_threshold_frac', 0.06)
 
         # --- 직선 피팅 조향 (90도 코너의 정답) ---
@@ -314,9 +280,6 @@ class CentroidFollowNode(Node):
         self._lost_run = 0          # 연속으로 놓친 프레임 수
         self._last_side = 0.0       # 마지막으로 본 선의 방향 (+왼쪽 / -오른쪽)
         self.corner_gain_scale = float(p('corner_gain_scale').value)
-        self.speed_gain_comp = bool(p('speed_gain_comp').value)
-        self.gain_ref_speed = float(p('gain_ref_speed').value)
-        self.gain_comp_max = float(p('gain_comp_max').value)
         self._kp_base = float(p('kp').value)
         self.corner_enter_frames = int(p('corner_enter_frames').value)
         self._corner_run = 0        # 큰 오차가 연속으로 몇 프레임 이어졌나
@@ -475,13 +438,10 @@ class CentroidFollowNode(Node):
             far = roi[f0:f1, :]
             far_cents, _, _ = self.find_centroids(far)
             if far_cents:
-                # 가장 '먼'(화면에서 가장 위) 컨투어를 쓴다.
-                #
-                # 앞의 둘을 평균내면 안 된다. 코너에서 선이 휘면 여러 조각으로
-                # 잡히는데, 그중 아무 둘이나 평균내면 휜 정보가 상쇄돼 중심이
-                # 화면 한가운데로 나온다(측정: 코너인데 오차 1px).
-                # 그러면 선행 감속이 아예 안 걸린다.
-                fx = min(far_cents, key=lambda c: c[1])[0]
+                if len(far_cents) >= 2:
+                    fx = 0.5 * (far_cents[0][0] + far_cents[1][0])
+                else:
+                    fx = far_cents[0][0]
                 far_err = abs(fx - roi_w / 2.0)
 
         # C. 신뢰도 -- 마스크 픽셀이 모자라면 조향을 갱신하지 않고 이전 값을 유지한다.
@@ -567,15 +527,8 @@ class CentroidFollowNode(Node):
         # 코너에 들어가면 강하게 꺾는다.
         dead = base_dead
         in_corner = self._corner_run >= self.corner_enter_frames
-        kp = self._kp_base * (self.corner_gain_scale if in_corner else 1.0)
-
-        # 빠를수록 같은 조향각으로 덜 돈다 -> 게인을 키워 상쇄한다.
-        # 코너에서만 적용한다. 직선에서 키우면 잡음까지 증폭해 떨린다
-        # (측정: 떨림 3.68도 -> 5.92도).
-        if self.speed_gain_comp and in_corner and self._speed_cmd > 0.0:
-            comp = self._speed_cmd / max(0.1, self.gain_ref_speed)
-            kp *= min(self.gain_comp_max, max(1.0, comp))
-        self.pid.kp = kp
+        self.pid.kp = (self._kp_base * self.corner_gain_scale if in_corner
+                       else self._kp_base)
 
         # 직선 피팅 오차. 수평선(90도 코너)에서 발산해 강하게 꺾게 만든다.
         fit_err = (self.fit_line_error(line_mask)
