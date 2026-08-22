@@ -110,6 +110,9 @@ class CentroidFollowNode(Node):
         # 상한을 넉넉히 잡으면 갓길이 통과하므로 원본 수준으로 조인다.
         self.declare_parameter('width_min_frac', 0.012)
         self.declare_parameter('width_max_frac', 0.06)
+        # 바운딩 박스를 얼마나 채우면 '굵은 덩어리'로 볼지. 기울어진 가는 선은
+        # 박스가 넓어도 채움률이 낮다 -- 그걸로 갓길과 구분한다.
+        self.declare_parameter('max_fill_ratio', 0.45)
 
         # --- PID ---
         # 원본 errorNormalize = 1/400 은 800px 폭 카메라 기준이다(화면 반폭).
@@ -186,6 +189,29 @@ class CentroidFollowNode(Node):
         # "선 위나 근처에서 너무 예민하게 떠는 걸 막는다"
         self.declare_parameter('target_threshold_frac', 0.06)
 
+        # --- 직선 피팅 조향 (90도 코너의 정답) ---
+        # 참조: openmv/openmv-projects robotics/donkey-car/line_follower_main.py
+        #
+        # 그쪽은 컨투어 중심이 아니라 '선 전체에 직선을 피팅'하고, 화면 세로
+        # 중앙 높이에서 그 직선의 x 를 구한다:
+        #
+        #   cx = (rho - cy*sin(theta)) / cos(theta)
+        #
+        # 원본 주석이 우리 문제를 그대로 설명한다:
+        #   "cx_normal 이 +-1 을 넘으면 매우 강하게 꺾어야 한다는 뜻이다.
+        #    이는 로봇이 '수평선'으로 진입하는 경우에 해당한다. 선이 수평에
+        #    가까울수록 cx_normal 이 +-무한대로 발산한다. 좋은 건 이게 정확히
+        #    우리가 원하는 동작이고, 선으로 되돌아가게 만든다는 것이다."
+        #
+        # 90도 코너에서 선은 화면에서 '수평'이 된다. 컨투어 중심을 쓰면 그 값이
+        # 화면 안 좌표에 갇혀 오차가 최대 1.0 을 못 넘고 조향이 포화된다.
+        # 직선 피팅은 cos(theta)->0 이라 오차가 발산하므로 훨씬 강하게 꺾는다.
+        self.declare_parameter('use_line_fit', True)
+        # 피팅에 쓸 최소 점 개수
+        self.declare_parameter('fit_min_points', 20)
+        # 오차 상한. 발산을 허용하되 무한대는 막는다.
+        self.declare_parameter('fit_err_max', 4.0)
+
         # --- 선 유실 복구 (90도 코너) ---
         # 참조: nsa31/Line-Lane-Follower-Robot_ROS
         #       white_yellow_lane_follower_sim.py 의 else 분기
@@ -230,6 +256,7 @@ class CentroidFollowNode(Node):
                                int(p('val_high').value)])
         self.width_min_frac = float(p('width_min_frac').value)
         self.width_max_frac = float(p('width_max_frac').value)
+        self.max_fill_ratio = float(p('max_fill_ratio').value)
         self.steer_sign = float(p('steer_sign').value)
         self.speed = float(p('speed').value)
         self.speed_max = float(p('speed_max').value)
@@ -243,6 +270,9 @@ class CentroidFollowNode(Node):
         self.near_band_top = float(p('near_band_top').value)
         self.far_threshold_frac = float(p('far_threshold_frac').value)
         self.far_brake_step = float(p('far_brake_step').value)
+        self.use_line_fit = bool(p('use_line_fit').value)
+        self.fit_min_points = int(p('fit_min_points').value)
+        self.fit_err_max = float(p('fit_err_max').value)
         self.lost_recover = bool(p('lost_recover').value)
         self.lost_steer_frac = float(p('lost_steer_frac').value)
         self.lost_speed = float(p('lost_speed').value)
@@ -300,15 +330,75 @@ class CentroidFollowNode(Node):
         contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL,
                                        cv2.CHAIN_APPROX_NONE)
         out = []
+        kept = []
         for c in contours:
-            _x, _y, cw, _ch = cv2.boundingRect(c)
-            if not (w_min < cw < w_max):
-                continue            # 폭 필터 -- 갓길·차체는 여기서 탈락
+            _x, _y, cw, ch = cv2.boundingRect(c)
+            area = cv2.contourArea(c)
+
+            # 폭 필터 -- 갓길·차체는 여기서 탈락한다.
+            # 다만 바운딩 박스 폭만 보면 '기울어진 가는 선'이 억울하게 걸린다.
+            # 90도 코너에서 선이 눕는 순간이 정확히 그 경우인데, 그때가 가장
+            # 강하게 꺾어야 할 때다. 그래서 '실제로 굵은가'를 면적으로 판단한다.
+            #   가는 선  : 박스는 넓어도 채움률(area/박스넓이)이 낮다
+            #   갓길·차체: 박스를 꽉 채운다
+            # 선의 '두께'를 면적/길이로 추정한다. 박스 폭이 아니라 이게 실제
+            # 굵기다 -- 기울어진 선은 박스가 넓어도 두께는 그대로 가늘다.
+            length = float(max(cw, ch, 1))
+            thickness = area / length
+            box = float(max(1, cw * ch))
+            fill = area / box
+            thin = thickness < w_max and fill < self.max_fill_ratio
+
+            if not (w_min < cw < w_max) and not thin:
+                continue
             m = cv2.moments(c)
             if m['m00'] == 0:
                 continue
             out.append((int(m['m10'] / m['m00']), int(m['m01'] / m['m00'])))
-        return out, mask
+            kept.append(c)
+
+        # 폭 필터를 통과한 컨투어만 남긴 마스크. 직선 피팅은 이것만 봐야 한다 --
+        # 원본 mask 에는 갓길이 그대로 남아 있어서(면적의 대부분) 피팅이
+        # 갓길 직선을 잡아버린다.
+        line_mask = np.zeros_like(mask)
+        if kept:
+            cv2.drawContours(line_mask, kept, -1, 255, -1)
+        return out, mask, line_mask
+
+    def fit_line_error(self, mask):
+        """선 전체에 직선을 피팅해 정규화 횡오차를 낸다. openmv 방식.
+
+        컨투어 중심과의 결정적 차이: 90도 코너에서 선이 화면상 '수평'이 되면
+        중심은 화면 안 좌표에 갇히지만, 직선 피팅은 화면 밖으로 발산한다.
+        그 발산이 곧 "아주 강하게 꺾어라"라는 신호다.
+
+        cv2.fitLine 은 (vx, vy, x0, y0) 를 준다. 화면 세로 중앙에서의 x 는
+            x = x0 + (cy - y0) * vx/vy
+        인데, 수평선이면 vy->0 이라 이 값이 발산한다 -- openmv 의
+        cx = (rho - cy*sin(th))/cos(th) 와 같은 성질이다.
+        """
+        ys, xs = mask.nonzero()
+        if len(xs) < self.fit_min_points:
+            return None
+        pts = np.column_stack((xs, ys)).astype(np.float32)
+        try:
+            vx, vy, x0, y0 = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01).ravel()
+        except Exception:
+            return None
+
+        h, w = mask.shape[:2]
+        cy = h * 0.5
+        half = w * 0.5
+
+        # vy 가 0 에 가까울수록(수평선) x 가 크게 발산한다 -- 그게 요점이다.
+        if abs(vy) < 1e-6:
+            # 완전한 수평선. 방향은 선의 무게중심이 어느 쪽인지로 정한다.
+            side = float(np.mean(xs)) - half
+            return math.copysign(self.fit_err_max, side)
+
+        x_at_cy = x0 + (cy - y0) * (vx / vy)
+        err = (x_at_cy - half) / half
+        return float(np.clip(err, -self.fit_err_max, self.fit_err_max))
 
     def on_image(self, msg: Image):
         try:
@@ -337,7 +427,7 @@ class CentroidFollowNode(Node):
         # 조향용 가까운 줄 (ROI 하단부)
         rh = roi.shape[0]
         near = roi[int(rh * self.near_band_top):, :]
-        cents, mask = self.find_centroids(near)
+        cents, mask, line_mask = self.find_centroids(near)
 
         # 감속용 먼 줄 (ROI 상단부). 조향에는 절대 안 쓴다 --
         # 먼 곳은 부정확해서 조향에 넣으면 오히려 불안정해진다.
@@ -346,7 +436,7 @@ class CentroidFollowNode(Node):
             f0 = int(rh * self.far_band_top)
             f1 = max(f0 + 4, int(rh * (self.far_band_top + self.far_band_height)))
             far = roi[f0:f1, :]
-            far_cents, _ = self.find_centroids(far)
+            far_cents, _, _ = self.find_centroids(far)
             if far_cents:
                 if len(far_cents) >= 2:
                     fx = 0.5 * (far_cents[0][0] + far_cents[1][0])
@@ -358,6 +448,32 @@ class CentroidFollowNode(Node):
         # 원본: if confidence >= confidence_threshold: (아니면 아무것도 안 함)
         # 코너에서 선이 잠깐 프레임을 벗어나도 마지막 조향으로 계속 돈다.
         confidence = float((mask > 0).sum()) / max(1, mask.size)
+
+        # 컨투어를 못 찾아도 직선 피팅은 될 수 있다.
+        # 90도 코너에서 선이 기울면 폭 필터(가로로 누운 선은 폭이 넓다)에 걸려
+        # 컨투어가 탈락하는데, 정작 그때가 가장 강하게 꺾어야 하는 순간이다.
+        # 픽셀이 충분하면 피팅으로 조향한다.
+        if len(cents) == 0 and confidence >= self.confidence_frac:
+            fit_only = (self.fit_line_error(line_mask)
+                        if self.use_line_fit else None)
+            if fit_only is not None and abs(fit_only) > 0.15:
+                self._lost_run = 0
+                out = max(-1.0, min(1.0, self.pid.kp * fit_only))
+                steer = -self.steer_sign * out * MAX_STEER
+                self._steer_cmd = max(-MAX_STEER, min(MAX_STEER, steer))
+                self._last_side = -fit_only        # 부호 규약을 맞춘다
+                # 기울어진 선 = 코너. 감속한다.
+                self._throttle = max(self.speed_min,
+                                     self._throttle - self.brake_step)
+                self._speed_cmd = max(MIN_SPEED, self._throttle)
+                self._log('컨투어 없음, 직선피팅으로 조향  fit=%+.2f  '
+                          'steer=%+.1f도  spd=%.2f'
+                          % (fit_only, np.degrees(self._steer_cmd),
+                             self._speed_cmd))
+                if self.pub_dbg is not None:
+                    self._publish_debug(roi, mask, cents, None, msg.header)
+                return
+
         if len(cents) == 0 or confidence < self.confidence_frac:
             self._lost_run += 1
 
@@ -414,13 +530,23 @@ class CentroidFollowNode(Node):
         self.pid.kp = (self._kp_base * self.corner_gain_scale if in_corner
                        else self._kp_base)
 
+        # 직선 피팅 오차. 수평선(90도 코너)에서 발산해 강하게 꺾게 만든다.
+        fit_err = (self.fit_line_error(line_mask)
+                   if self.use_line_fit else None)
+
         # B. 불감대 -- 선 근처에서 떨지 않게 한다.
         # 원본: "prevents algorithm from being too twitchy when it is on the line"
-        if err_px > dead:
+        if err_px > dead or (fit_err is not None and abs(fit_err) > 1.0):
             # 원본: tickPID(centroid, width/2) -- setpoint 가 centroid 다.
             # error = centroid - 중앙 이므로 선이 오른쪽이면 error 양수.
             # 그때 차는 왼쪽에 있다는 뜻이라 조향은 반대로 나가야 한다.
-            out = self.pid.tick(centroid, target)
+            if fit_err is not None and abs(fit_err) > 1.0:
+                # 화면 밖으로 발산 = 수평선 = 90도 코너. 컨투어 중심으로는
+                # 표현이 안 되는 상황이므로 피팅 오차를 그대로 쓴다.
+                out = max(-1.0, min(1.0, self.pid.kp * fit_err))
+                self.pid.prevError = fit_err
+            else:
+                out = self.pid.tick(centroid, target)
             steer = -self.steer_sign * out * MAX_STEER
             self._steer_cmd = max(-MAX_STEER, min(MAX_STEER, steer))
 
@@ -447,9 +573,11 @@ class CentroidFollowNode(Node):
             far_slow = True
 
         self._speed_cmd = max(MIN_SPEED, self._throttle)
-        self._log('centroid=%d/%d  err=%.0f  steer=%+.1f도  spd=%.2f  '
+        self._log('centroid=%d/%d  err=%.0f  fit=%s  steer=%+.1f도  spd=%.2f  '
                   'far=%s%s  (컨투어 %d개)'
-                  % (centroid, roi_w, err_px, np.degrees(self._steer_cmd),
+                  % (centroid, roi_w, err_px,
+                     ('%+.2f' % fit_err) if fit_err is not None else '-',
+                     np.degrees(self._steer_cmd),
                      self._speed_cmd,
                      '%.0f' % far_err if far_err is not None else '-',
                      ' [선행감속]' if far_slow else '',

@@ -68,7 +68,7 @@ def run(mid_x=0.35, **kw):
 print('\n[1] 폭 필터가 갓길·차체를 거른다 (이 파이프라인의 핵심)')
 n = cf.CentroidFollowNode()
 roi = scene()[int(H * n.roi_top):int(H * n.roi_bottom), :]
-cents, _ = n.find_centroids(roi)
+cents, _, _ = n.find_centroids(roi)
 xs = sorted(c[0] for c in cents)
 
 check('컨투어를 찾았다', len(cents) > 0, '(%d개)' % len(cents))
@@ -80,7 +80,7 @@ check('차체(화면 오른쪽 끝)를 안 잡는다', all(x < W * 0.80 for x in
 # 필터를 풀면 실제로 잡힌다 -- 전제 확인
 n2 = cf.CentroidFollowNode()
 n2.width_min_frac, n2.width_max_frac = 0.0, 10.0
-cents2, _ = n2.find_centroids(roi)
+cents2, _, _ = n2.find_centroids(roi)
 xs2 = sorted(c[0] for c in cents2)
 check('  필터를 풀면 잡힌다 (전제 확인)',
       len(cents2) > len(cents) and (xs2[0] < W * 0.10 or xs2[-1] > W * 0.80),
@@ -383,6 +383,75 @@ nq.on_image(ros_stubs.Image(cv=scene(None)))     # 딱 1프레임만 놓침
 check('1프레임 유실은 복구 조향을 안 건다',
       abs(nq._steer_cmd - s_before) < 1e-9,
       '(%.1f도 유지)' % math.degrees(nq._steer_cmd))
+
+print('\n[6f] 직선 피팅 - 90도 코너(수평선)에서 조향이 발산하는가 ★')
+# 참조: openmv/openmv-projects robotics/donkey-car/line_follower_main.py
+# 원본 주석:
+#   "cx_normal 이 +-1 을 넘으면 매우 강하게 꺾어야 한다는 뜻이다. 이는 로봇이
+#    '수평선'으로 진입하는 경우에 해당한다. 선이 수평에 가까울수록 cx_normal 이
+#    +-무한대로 발산한다. 좋은 건 이게 정확히 우리가 원하는 동작이라는 것이다."
+#
+# 컨투어 중심은 화면 안 좌표라 |오차|<=1 에 갇힌다. 90도 코너에서 선이 화면상
+# 수평이 되면 그 표현으로는 "아주 강하게 꺾어라"를 말할 수 없다.
+
+
+def angled_line(angle_deg, cx_frac=0.5):
+    """angle_deg: 0=수직(직선 주행), 90=수평(90도 코너 진입)."""
+    hsv = np.zeros((H, W, 3), np.uint8)
+    hsv[:, :] = (106, 113, 73)
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    m = cv2.cvtColor(np.uint8([[(20, 255, 230)]]), cv2.COLOR_HSV2BGR)[0][0]
+    r0, r1 = int(H * 0.45), int(H * 0.80)
+    cx, cy = W * cx_frac, (r0 + r1) / 2
+    th = math.radians(angle_deg)
+    for t in np.arange(-300, 300, 2.0):
+        x = int(cx + t * math.sin(th))
+        y = int(cy - t * math.cos(th))
+        if r0 <= y < r1 and 5 <= x < W - 5:
+            bgr[max(r0, y - 3):y + 3, x - 5:x + 5] = m
+    return bgr
+
+
+def steer_for_angle(angle, use_fit=True):
+    nn = cf.CentroidFollowNode()
+    nn.use_line_fit = use_fit
+    nn.on_image(ros_stubs.Image(cv=angled_line(angle)))
+    return nn._steer_cmd
+
+
+# 피팅 오차가 실제로 발산하는지
+nfit = cf.CentroidFollowNode()
+errs = {}
+for ang in (0, 45, 85):
+    img = angled_line(ang)
+    roi = img[int(H * nfit.roi_top):int(H * nfit.roi_bottom), :]
+    near = roi[int(roi.shape[0] * nfit.near_band_top):, :]
+    _, _, msk = nfit.find_centroids(near)
+    errs[ang] = nfit.fit_line_error(msk)
+
+check('수직선은 오차 ~0', abs(errs[0]) < 0.2, '(%+.2f)' % errs[0])
+check('수평에 가까우면 |오차| > 1 로 발산 ★', abs(errs[85]) > 1.0,
+      '(45도 %+.2f -> 85도 %+.2f)' % (errs[45], errs[85]))
+
+# 조향으로 이어지는지 -- 이게 실제 효과다
+s90_on = steer_for_angle(85, use_fit=True)
+s90_off = steer_for_angle(85, use_fit=False)
+check('90도 코너에서 최대 조향', abs(s90_on) > cf.MAX_STEER * 0.9,
+      '(%.1f도)' % math.degrees(s90_on))
+# 두께 필터 덕에 기울어진 선도 컨투어로는 잡히지만, 컨투어 중심은 화면 안
+# 좌표라 조향이 much 작다. 피팅이 그 차이를 만든다.
+check('  피팅이 조향을 크게 키운다 (전제 확인)', abs(s90_on) > abs(s90_off) * 1.8,
+      '(피팅없이 %.1f도 -> 피팅 %.1f도)'
+      % (math.degrees(s90_off), math.degrees(s90_on)))
+
+s_straight = steer_for_angle(0, use_fit=True)
+check('직선에서는 피팅이 있어도 조향 ~0', abs(s_straight) < math.radians(2),
+      '(%.1f도)' % math.degrees(s_straight))
+
+s70 = steer_for_angle(70, use_fit=True)
+check('기울기에 비례해 커진다', math.radians(2) < abs(s70) < abs(s90_on),
+      '(70도 %.1f도 < 85도 %.1f도)'
+      % (math.degrees(s70), math.degrees(s90_on)))
 
 print('\n[7] 조향 범위 - 화면 끝에서 최대 조향이 나오는가')
 # 원본 errorNormalize=1/400 은 800px 폭 카메라 기준이다. 우리 카메라(640/320)에
