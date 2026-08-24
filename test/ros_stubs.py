@@ -18,6 +18,7 @@ Bool = _mk_msg('Bool')
 Float64 = _mk_msg('Float64')
 Int32 = _mk_msg('Int32')
 String = _mk_msg('String')
+Float32MultiArray = _mk_msg('Float32MultiArray')
 
 
 class Header:
@@ -186,6 +187,7 @@ def install():
     std_msg = types.ModuleType('std_msgs.msg')
     std_msg.Bool, std_msg.Float64 = Bool, Float64
     std_msg.Int32, std_msg.String = Int32, String
+    std_msg.Float32MultiArray = Float32MultiArray
     std.msg = std_msg
 
     sen = types.ModuleType('sensor_msgs')

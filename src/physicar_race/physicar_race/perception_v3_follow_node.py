@@ -24,7 +24,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped  # noqa: F401  (Path.poses 항목 타입 문서화용)
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Float32MultiArray, Float64
 
 WHEELBASE = 0.18            # m -- 드라이버 계층과 같은 값 (los_drive_node 와 동일)
 MAX_STEER = math.radians(20.0)
@@ -65,6 +65,21 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('grace_s', 1.0)
         self.declare_parameter('grace_speed', 0.35)
 
+        # --- 초록 고깔 회피 (cone_bev_node 가 /cones 로 준다) ---
+        # 궤적을 따로 만들지 않고 **전방주시점만 옆으로 민다**. 순수추종이
+        # 그 점을 향해 호를 그리므로 회피 궤적은 자동으로 나온다.
+        self.declare_parameter('avoid_enabled', True)
+        # 목표점 앞뒤로 이만큼 안에 있는 고깔만 본다. ld 가 속도에 따라
+        # 변하므로 고정 창을 쓰면 빠를 때 놓친다 -> ld 비율로도 넓힌다.
+        self.declare_parameter('cone_window_m', 0.35)
+        self.declare_parameter('cone_margin_m', 0.12)   # 고깔 옆 최소 여유
+        self.declare_parameter('wall_margin_m', 0.10)   # 흰선 앞 최소 여유
+        self.declare_parameter('max_offset_m', 0.45)    # 오프셋 절대 상한
+        # 붙을 땐 빠르게, 풀 땐 천천히. 검출이 깜빡여도 좌우로 안 떨리게.
+        self.declare_parameter('offset_engage_rate', 1.20)   # m/s
+        self.declare_parameter('offset_release_rate', 0.40)  # m/s
+        self.declare_parameter('cones_timeout_s', 0.5)
+
         p = self.get_parameter
         self.control_hz = float(p('control_hz').value)
         self.ld_min_m = float(p('ld_min_m').value)
@@ -81,11 +96,22 @@ class PerceptionV3FollowNode(Node):
         self.input_timeout = float(p('input_timeout_s').value)
         self.grace_s = float(p('grace_s').value)
         self.grace_speed = float(p('grace_speed').value)
+        self.avoid_enabled = bool(p('avoid_enabled').value)
+        self.cone_window_m = float(p('cone_window_m').value)
+        self.cone_margin_m = float(p('cone_margin_m').value)
+        self.wall_margin_m = float(p('wall_margin_m').value)
+        self.max_offset_m = float(p('max_offset_m').value)
+        self.offset_engage_rate = float(p('offset_engage_rate').value)
+        self.offset_release_rate = float(p('offset_release_rate').value)
+        self.cones_timeout = float(p('cones_timeout_s').value)
 
         self._path_points = []      # [(x_fwd, y_lat), ...] 근->원 순서
         self._path_valid = False
         self._last_path_time = 0.0
         self._last_ok_time = 0.0
+        self._cones = []            # [(x, y, 반폭, 좌벽y, 우벽y), ...]
+        self._last_cones_time = 0.0
+        self._offset = 0.0          # 지금 적용 중인 횡 오프셋 (m)
         self._speed = 0.0
         self._steer = 0.0
         self._n = 0
@@ -96,6 +122,7 @@ class PerceptionV3FollowNode(Node):
         self.create_subscription(Path, '/perception_v3/path', self.on_path, 10)
         self.create_subscription(Bool, '/perception_v3/debug/path_valid',
                                  self.on_valid, 10)
+        self.create_subscription(Float32MultiArray, '/cones', self.on_cones, 10)
         self.pub_speed = self.create_publisher(Float64, '/speed', 10)
         self.pub_steer = self.create_publisher(Float64, '/steering', 10)
         self.create_timer(1.0 / self.control_hz, self.tick)
@@ -111,6 +138,76 @@ class PerceptionV3FollowNode(Node):
 
     def on_valid(self, msg):
         self._path_valid = bool(msg.data)
+
+    def on_cones(self, msg):
+        """[x, y, 반폭, 좌벽y, 우벽y] * N 을 풀어 담는다."""
+        data = list(msg.data)
+        self._cones = [tuple(data[i:i + 5])
+                       for i in range(0, len(data) - 4, 5)]
+        self._last_cones_time = time.time()
+
+    # ------------------------------------------------------------ 회피
+
+    def avoid_target_y(self, x_fwd, y_lat, ld):
+        """목표점 근처에 고깔이 있으면 옮겨야 할 y 를 돌려준다.
+
+        궤적을 따로 만들지 않는다. 순수추종이 목표점을 향해 호를 그리므로,
+        **점 하나만 옮기면 회피 궤적은 저절로 나온다.** 대신 그 점이 실제로
+        갈 수 있는 곳이어야 하므로 흰선 여유를 같이 본다(넘으면 실격).
+
+        반환: (목표 y, 판단 근거 문자열)
+        """
+        if not self.avoid_enabled:
+            return y_lat, ''
+        if (time.time() - self._last_cones_time) > self.cones_timeout:
+            return y_lat, ''
+
+        # 목표점 근처 고깔만 본다. 창은 속도가 붙을수록 넓어져야 한다 --
+        # ld 가 길어지면 같은 시간에 더 먼 구간을 지나기 때문.
+        window = self.cone_window_m + 0.25 * ld
+        near = [c for c in self._cones if abs(c[0] - x_fwd) <= window]
+        if not near:
+            return y_lat, ''
+
+        # 목표점에 가장 가까운(횡으로) 고깔 하나만 처리한다. 여럿이면
+        # 가장 방해되는 것부터 -- 그걸 피하면 대개 나머지도 풀린다.
+        cone = min(near, key=lambda c: abs(c[1] - y_lat))
+        cx, cy, half, wall_left, wall_right = cone
+
+        blocked_lo = cy - half - self.cone_margin_m     # 고깔의 오른쪽 끝
+        blocked_hi = cy + half + self.cone_margin_m     # 고깔의 왼쪽 끝
+        if not (blocked_lo < y_lat < blocked_hi):
+            return y_lat, ''        # 목표점이 이미 고깔 밖이다
+
+        # 좌/우 빈 공간. +Y 가 왼쪽이므로 왼쪽은 y 가 큰 쪽이다.
+        left_lo, left_hi = blocked_hi, wall_left - self.wall_margin_m
+        right_lo, right_hi = wall_right + self.wall_margin_m, blocked_lo
+        left_gap = left_hi - left_lo
+        right_gap = right_hi - right_lo
+
+        if left_gap <= 0.0 and right_gap <= 0.0:
+            # 양쪽 다 못 간다. 억지로 밀면 흰선을 넘는다 -- 그냥 둔다.
+            return y_lat, '양쪽막힘'
+
+        if left_gap >= right_gap:
+            return 0.5 * (left_lo + left_hi), '좌(%.2fm)' % left_gap
+        return 0.5 * (right_lo + right_hi), '우(%.2fm)' % right_gap
+
+    def step_offset(self, desired):
+        """오프셋을 변화율 제한으로 따라가게 한다.
+
+        붙을 땐 빠르게, 풀 땐 천천히. 검출이 한두 프레임 깜빡여도 조향이
+        좌우로 떨리지 않게 하려는 것이다. desired 가 0 이 되면 같은 규칙으로
+        서서히 되돌아온다.
+        """
+        rate = (self.offset_engage_rate if abs(desired) > abs(self._offset)
+                else self.offset_release_rate)
+        step = rate / max(1.0, self.control_hz)
+        delta = desired - self._offset
+        self._offset += max(-step, min(step, delta))
+        self._offset = max(-self.max_offset_m,
+                           min(self.max_offset_m, self._offset))
+        return self._offset
 
     # ------------------------------------------------------------ 물리 (los_drive_node 와 동일)
 
@@ -180,7 +277,12 @@ class PerceptionV3FollowNode(Node):
                     max(self.ld_min_m, self.ld_k * max(self._speed, self.v_min)))
             x_fwd, y_lat = self.lookahead_point(self._path_points, ld)
 
-            steer = self.pure_pursuit(x_fwd, y_lat) * self.steer_sign
+            # 고깔이 있으면 목표점을 옆으로 민다. 속도는 안 줄인다 --
+            # 미리(ld 앞에서) 피하는 것이 이 설계의 전제다.
+            desired_y, why = self.avoid_target_y(x_fwd, y_lat, ld)
+            y_used = y_lat + self.step_offset(desired_y - y_lat)
+
+            steer = self.pure_pursuit(x_fwd, y_used) * self.steer_sign
             steer = max(-MAX_STEER, min(MAX_STEER, steer))
 
             v_target = self.speed_limit(steer, visible_m)
@@ -192,9 +294,10 @@ class PerceptionV3FollowNode(Node):
 
             self._publish(self._speed, self._steer)
             self._log('LOS(%.2fm, %+.2fm) ld=%.2f  보임=%.2fm  '
-                      'steer=%+.1f도  v=%.2f (한계 %.2f)'
-                      % (x_fwd, y_lat, ld, visible_m,
-                         math.degrees(self._steer), self._speed, v_target))
+                      'steer=%+.1f도  v=%.2f (한계 %.2f)  회피=%+.2fm %s'
+                      % (x_fwd, y_used, ld, visible_m,
+                         math.degrees(self._steer), self._speed, v_target,
+                         self._offset, why or '-'))
             return
 
         since = now - self._last_ok_time

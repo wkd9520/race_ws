@@ -38,8 +38,16 @@ import os
 PKG = 'physicar_race'
 
 
+def _b(name):
+    return ParameterValue(LaunchConfiguration(name), value_type=bool)
+
+
 def _f(name):
     return ParameterValue(LaunchConfiguration(name), value_type=float)
+
+
+def _i(name):
+    return ParameterValue(LaunchConfiguration(name), value_type=int)
 
 
 def generate_launch_description():
@@ -58,6 +66,16 @@ def generate_launch_description():
         DeclareLaunchArgument('v_max', default_value='1.20'),
         DeclareLaunchArgument('v_min', default_value='0.45'),
         DeclareLaunchArgument('a_lat_max', default_value='3.0'),
+
+        # --- 초록 고깔 회피 ---
+        DeclareLaunchArgument('avoid_enabled', default_value='true'),
+        DeclareLaunchArgument('green_h_min', default_value='40'),
+        DeclareLaunchArgument('green_h_max', default_value='85'),
+        DeclareLaunchArgument('green_s_min', default_value='80'),
+        DeclareLaunchArgument('green_v_min', default_value='60'),
+        DeclareLaunchArgument('cone_margin_m', default_value='0.12'),
+        DeclareLaunchArgument('wall_margin_m', default_value='0.10'),
+        DeclareLaunchArgument('max_offset_m', default_value='0.45'),
     ]
 
     perception_v3 = IncludeLaunchDescription(
@@ -72,6 +90,23 @@ def generate_launch_description():
         }.items(),
     )
 
+    cones = Node(
+        package=PKG, executable='cone_bev_node', name='cone_bev_node',
+        output='screen',
+        parameters=[{
+            # perception_v3.yaml 의 bev.* 와 반드시 같아야 한다.
+            # 다르면 고깔 좌표가 통째로 틀어진다 -- 노드가 이미지 크기로
+            # 교차 검증해서 다르면 에러를 찍는다.
+            'bev_x_min': 0.10, 'bev_x_max': 2.00,
+            'bev_y_min': -0.75, 'bev_y_max': 0.75,
+            'bev_resolution': 0.01,
+            'green_h_min': _i('green_h_min'),
+            'green_h_max': _i('green_h_max'),
+            'green_s_min': _i('green_s_min'),
+            'green_v_min': _i('green_v_min'),
+        }],
+    )
+
     follow = Node(
         package=PKG, executable='perception_v3_follow_node',
         name='perception_v3_follow_node', output='screen',
@@ -84,7 +119,11 @@ def generate_launch_description():
             'v_max': _f('v_max'),
             'v_min': _f('v_min'),
             'a_lat_max': _f('a_lat_max'),
+            'avoid_enabled': _b('avoid_enabled'),
+            'cone_margin_m': _f('cone_margin_m'),
+            'wall_margin_m': _f('wall_margin_m'),
+            'max_offset_m': _f('max_offset_m'),
         }],
     )
 
-    return LaunchDescription(args + [perception_v3, follow])
+    return LaunchDescription(args + [perception_v3, cones, follow])
