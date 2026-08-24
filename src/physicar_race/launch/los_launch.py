@@ -14,13 +14,20 @@
 
 ━━━ 처음 붙일 때 순서 ━━━
 
-1. publish_debug:=true 로 띄우고 los/debug_image 를 본다.
-   직선 구간에서 **두 흰선이 평행한 세로선**이 되도록 src_* 를 맞춘다.
-   이게 이 노드에서 유일하게 실측이 필요한 값이다.
+1. 사다리꼴은 **자동 캘리브레이션**이 잡는다(auto_calibrate, 기본 켜짐).
+   손으로 top_half/bot_half 를 맞추면 직관과 반대로 움직인다 -- 잘라오는
+   구간을 넓힐수록 그 안의 도로 비중은 오히려 줄어서 더 좁아 보인다.
+   대신 출발 직후 직선을 20프레임(약 1초)만 보여주면 흰선 실제 픽셀
+   위치를 재서 스스로 확정한다. 그 전까지는 기본값으로 주행한다.
+
+   publish_debug:=true 로 los/debug_image 를 띄워서 확인한다:
 
        ros2 run rqt_image_view rqt_image_view
 
    빨강 = 흰선으로 잡힌 곳, 초록 점 = 통로 중심선, 보라 = LOS 점.
+   "사다리꼴 자동 확정" 로그가 뜬 뒤에도 여전히 도로가 사다리꼴이면
+   white_v_min/white_s_max 부터 의심할 것 -- 캘리브레이션이 잰 흰선
+   위치 자체가 갓길과 뒤섞여 부정확했을 수 있다.
 
 2. 차가 반대로 꺾이면 steer_sign:=-1.0
 
@@ -47,12 +54,19 @@ def _f(name):
     return ParameterValue(LaunchConfiguration(name), value_type=float)
 
 
+def _i(name):
+    return ParameterValue(LaunchConfiguration(name), value_type=int)
+
+
 def generate_launch_description():
     args = [
         DeclareLaunchArgument('image_topic', default_value='/camera/image_raw'),
         DeclareLaunchArgument('publish_debug', default_value='false'),
 
-        # --- 사다리꼴: 실측으로 맞출 것 (위 주석 1번) ---
+        # --- 사다리꼴: 자동 캘리브레이션이 기본. 끄면 아래 값을 그대로 씀 ---
+        DeclareLaunchArgument('auto_calibrate', default_value='true'),
+        DeclareLaunchArgument('calib_frames', default_value='20'),
+        DeclareLaunchArgument('calib_margin_px', default_value='10'),
         DeclareLaunchArgument('src_top_y', default_value='0.58'),
         DeclareLaunchArgument('src_top_half', default_value='0.16'),
         DeclareLaunchArgument('src_bot_y', default_value='1.00'),
@@ -86,6 +100,9 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'publish_debug': _b('publish_debug'),
+            'auto_calibrate': _b('auto_calibrate'),
+            'calib_frames': _i('calib_frames'),
+            'calib_margin_px': _i('calib_margin_px'),
             'src_top_y': _f('src_top_y'),
             'src_top_half': _f('src_top_half'),
             'src_bot_y': _f('src_bot_y'),
@@ -102,10 +119,8 @@ def generate_launch_description():
             'v_max': _f('v_max'),
             'v_min': _f('v_min'),
             'a_lat_max': _f('a_lat_max'),
-            'white_s_max': ParameterValue(
-                LaunchConfiguration('white_s_max'), value_type=int),
-            'white_v_min': ParameterValue(
-                LaunchConfiguration('white_v_min'), value_type=int),
+            'white_s_max': _i('white_s_max'),
+            'white_v_min': _i('white_v_min'),
         }],
         remappings=[('image_raw', LaunchConfiguration('image_topic'))],
     )

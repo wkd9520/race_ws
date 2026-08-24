@@ -55,9 +55,12 @@ class LosDriveNode(Node):
         super().__init__('los_drive_node')
 
         # --- IPM 사다리꼴 (원본 화면 비율) ---
-        # 이 노드에서 **반드시 실측으로 맞춰야 하는 유일한 값**이다.
-        # 직선 구간에서 los/debug_image 를 띄우고 두 흰선이 '평행한 세로선'이
-        # 되도록 맞춘다. 어긋나면 이후 거리/횡위치가 전부 틀어진다.
+        # 아래 값은 auto_calibrate 가 꺼졌을 때만 쓰이는 출발점/폴백이다.
+        # 손으로 top_half/bot_half 를 맞추는 건 직관과 반대로 움직인다 --
+        # 잘라오는 구간을 넓힐수록 그 안에서 도로가 차지하는 비중은 오히려
+        # 줄어들어 더 좁아 보인다(전체를 BEV 폭으로 늘려 펴기 때문). 그래서
+        # 기본은 자동 캘리브레이션이다: 흰선의 실제 픽셀 위치를 재서 스스로
+        # 사다리꼴을 확정한다. _try_calibrate() 참고.
         #
         # 아랫변(src_bot_half)을 무작정 넓히면 안 된다. 넓힐수록 화각은
         # 지키지만 근거리 해상도를 버린다 -- 소스 픽셀을 BEV 폭으로 압축하는
@@ -68,6 +71,15 @@ class LosDriveNode(Node):
         self.declare_parameter('src_bot_y', 1.00)
         self.declare_parameter('src_bot_half', 0.70)
         self.declare_parameter('src_center', 0.50)
+
+        # 손으로 top_half/bot_half 를 맞추는 건 직관과 반대로 움직인다 --
+        # 넓게 잘라올수록 그 안의 도로 비중은 오히려 줄어서 더 좁아 보인다.
+        # bev_lane_node 에서 검증된 방식을 그대로 쓴다: 직선 구간에서 흰선의
+        # 실제 픽셀 위치를 재서 사다리꼴을 스스로 확정한다. 기본은 켜짐 --
+        # 꺼서 수동으로 맞추고 싶으면 auto_calibrate:=false.
+        self.declare_parameter('auto_calibrate', True)
+        self.declare_parameter('calib_frames', 20)
+        self.declare_parameter('calib_margin_px', 10)
 
         # --- BEV 출력과 실제 크기 대응 ---
         self.declare_parameter('bev_w', 200)
@@ -123,6 +135,9 @@ class LosDriveNode(Node):
         self.src_bot_y = float(p('src_bot_y').value)
         self.src_bot_half = float(p('src_bot_half').value)
         self.src_center = float(p('src_center').value)
+        self.auto_calibrate = bool(p('auto_calibrate').value)
+        self.calib_frames = int(p('calib_frames').value)
+        self.calib_margin_px = int(p('calib_margin_px').value)
         self.bev_w = int(p('bev_w').value)
         self.bev_h = int(p('bev_h').value)
         self.bev_near_m = float(p('bev_near_m').value)
@@ -153,6 +168,8 @@ class LosDriveNode(Node):
         self._M = None
         self._src_shape = None
         self._observed = None
+        self._calib = []
+        self._calibrated = not self.auto_calibrate
         self._speed = 0.0
         self._steer = 0.0
         self._lost_run = 0
@@ -181,6 +198,55 @@ class LosDriveNode(Node):
         dst = np.float32([[0, 0], [self.bev_w, 0],
                           [self.bev_w, self.bev_h], [0, self.bev_h]])
         return cv2.getPerspectiveTransform(src, dst)
+
+    def _measure_edges(self, bgr, y_frac):
+        """원본 화면의 특정 높이에서 좌/우 흰선 x 를 잰다. bev_lane_node 와 동일."""
+        h, w = bgr.shape[:2]
+        y = int(h * y_frac)
+        band = bgr[max(0, y - 3):min(h, y + 4), :]
+        hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, (0, 0, self.white_v_min),
+                           (180, self.white_s_max, 255))
+        cols = (mask > 0).sum(axis=0)
+        cx = w // 2
+        left = np.flatnonzero(cols[:cx] > 0)
+        right = np.flatnonzero(cols[cx:] > 0)
+        if len(left) == 0 or len(right) == 0:
+            return None
+        return float(left[-1]), float(cx + right[0])
+
+    def _try_calibrate(self, bgr):
+        """직선 구간의 흰선 위치에서 사다리꼴을 자동으로 잡는다.
+
+        손으로 top_half/bot_half 를 맞추면 직관과 반대로 움직인다 -- 잘라오는
+        구간을 넓히면 그 안에서 도로가 차지하는 비중이 줄어 오히려 더 좁아
+        보인다. 실제 흰선 픽셀 위치를 재는 것만이 맞는 방법이다.
+        """
+        w = bgr.shape[1]
+        top = self._measure_edges(bgr, self.src_top_y)
+        bot = self._measure_edges(bgr, self.src_bot_y)
+        if top is None or bot is None:
+            return
+        (tl, tr), (bl, br) = top, bot
+        if tr - tl < 8 or br - bl < 8 or (br - bl) <= (tr - tl):
+            return          # 원근이면 아래가 더 넓어야 한다 -- 아니면 아직 부정확
+        self._calib.append((tl, tr, bl, br))
+        if len(self._calib) < self.calib_frames:
+            return
+
+        a = np.array(self._calib, dtype=np.float64)
+        tl, tr, bl, br = np.median(a, axis=0)
+        m = self.calib_margin_px
+        self.src_center = ((tl + tr) * 0.5 + (bl + br) * 0.5) * 0.5 / w
+        self.src_top_half = ((tr - tl) * 0.5 + m) / w
+        self.src_bot_half = ((br - bl) * 0.5 + m) / w
+        self._M = None       # 다음 warp() 호출에서 새 사다리꼴로 다시 만든다
+        self._calibrated = True
+        self.get_logger().info(
+            '사다리꼴 자동 확정: center=%.3f top_half=%.3f bot_half=%.3f '
+            '(%d프레임 중앙값)'
+            % (self.src_center, self.src_top_half, self.src_bot_half,
+               self.calib_frames))
 
     def warp(self, bgr):
         h, w = bgr.shape[:2]
@@ -381,6 +447,9 @@ class LosDriveNode(Node):
         except Exception as e:                              # noqa: BLE001
             self.get_logger().error('이미지 변환 실패: %s' % e)
             return
+
+        if not self._calibrated:
+            self._try_calibrate(bgr)
 
         white = self.warp_mask(self.white_mask(bgr))
         path = self.corridor_path(white, self._observed)

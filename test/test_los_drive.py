@@ -246,6 +246,7 @@ def scene_node():
     n_.src_top_y, n_.src_top_half = 0.55, 0.30
     n_.src_bot_y, n_.src_bot_half = 1.00, 0.50
     n_.track_width_m = 1.70      # 이 장면의 실제 도로 폭에 맞춘다
+    n_._calibrated = True        # 자동 캘리브레이션이 위 수동값을 덮지 않도록
     return n_
 
 
@@ -283,6 +284,34 @@ check('속도가 한계 안 또는 정지(0)',
       all(x._speed == 0.0 or los.MIN_SPEED <= x._speed <= los.MAX_SPEED
           for x in (n11, n12, n13)),
       '(%s)' % ['%.2f' % x._speed for x in (n11, n12, n13)])
+
+print('\n[8b] 자동 캘리브레이션 - 손으로 안 맞춰도 사다리꼴을 스스로 잡는다 ★')
+# 사용자가 겪은 문제: src_top_half 를 0.07 -> 0.18 -> 0.30 으로 올렸는데도
+# BEV 위쪽이 안 넓어졌다. 방향이 반대였다 -- 잘라오는 폭을 넓힐수록 그 안의
+# 도로 비중이 줄어 오히려 좁아 보인다. 자동 캘리브레이션은 이 함정을 없앤다:
+# 실제 흰선 픽셀 위치를 재서 사다리꼴을 스스로 정하므로 방향을 고민할 일이
+# 없다.
+n15 = node()
+check('시작은 미확정 (auto_calibrate 기본 켜짐)', n15._calibrated is False)
+
+# 일부러 크게 틀린 기본값에서 출발한다 -- 사용자가 잘못 짚었던 0.30 방향
+n15.src_top_half = 0.30
+img_straight = perspective_scene(0.0)
+for _ in range(n15.calib_frames + 2):
+    n15._try_calibrate(img_straight)
+check('20여 프레임 뒤 확정된다', n15._calibrated is True)
+
+# 실제 원근을 재서 잡았으니, 아래가 위보다 넓어야 한다(전제가 스스로 확인됨)
+check('  잰 값이 원근과 맞는다 (아래 반폭 > 위 반폭)',
+      n15.src_bot_half > n15.src_top_half,
+      '(top=%.3f bot=%.3f)' % (n15.src_top_half, n15.src_bot_half))
+
+# 캘리브레이션 뒤에는 그 값으로 실제로 직선을 곧게 간다
+n15._M = None
+n15b = settle(n15, img_straight)
+check('  캘리브레이션 뒤 직선에서 거의 직진',
+      abs(math.degrees(n15b._steer)) < 5.0,
+      '(%+.1f도)' % math.degrees(n15b._steer))
 
 print('\n[9] 통로 유실 - 마지막 조향을 유지하다 정지')
 n14 = settle(scene_node(), perspective_scene(+1.0))
