@@ -69,9 +69,21 @@ check('손계산과 일치 (x=1.0 y=+0.5 -> 8.20도)', abs(d - 8.20) < 0.05, '(%
 check('왼쪽 점 -> 양수, 오른쪽 점 -> 음수',
       n.pure_pursuit(1.0, 0.5) > 0 > n.pure_pursuit(1.0, -0.5))
 
+# v_max/k_vis 로 잘리기 전의 곡률 항만 본다. 이걸 안 풀어두면 v_max 를
+# 낮추는 순간 이 검사가 "물리식이 틀렸다"가 아니라 "상한에 걸렸다"로
+# 실패한다 -- 실제로 v_max 를 1.2 로 내렸을 때 그렇게 깨졌다.
 n.k_vis = 99.0
+n.v_max = 99.0
 v20 = n.speed_limit(math.radians(20.0), 10.0)
 check('횡가속 한계 손계산과 일치 (1.22 m/s)', abs(v20 - 1.218) < 0.01, '(%.3f)' % v20)
+
+# 위 값이 v_max 를 넘는지가 실주행에서 의미가 있다: 넘으면 코너 감속이
+# 아예 작동하지 않는다(항상 v_max 가 먼저 걸린다).
+n_def = node()
+full_lock = math.sqrt(n_def.a_lat_max * (mod.WHEELBASE / math.tan(mod.MAX_STEER)))
+print('       최대조향에서 횡가속 한계 %.3f m/s vs v_max %.2f -> 코너 감속 %s'
+      % (full_lock, n_def.v_max,
+         '작동' if full_lock < n_def.v_max else '무효(v_max 가 항상 먼저 걸림)'))
 
 print('\n[2] 경로 기하 - base_footprint 미터 좌표는 변환이 필요 없다')
 n2 = node()
