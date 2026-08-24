@@ -1,0 +1,31 @@
+physicar_track_perception_v3:
+  ros__parameters:
+    camera.width: 480
+    camera.height: 360
+    camera.K: [201.38988018035889, 0.0, 240.0, 0.0, 201.38988733291626, 180.0, 0.0, 0.0, 1.0]
+    camera.D: [-0.045, -0.0001, -0.0003, -0.0001, 0.001]
+    bev.x_min: 0.1
+    bev.x_max: 2.0
+    bev.y_min: -0.75
+    bev.y_max: 0.75
+    bev.resolution: 0.01
+    ground_z: 0.0
+    sim_geometry.camera_height_correction_z: -0.018
+    projection.pitch_offset_deg: 2.8
+    tf_wait.max_pending_age: 0.25
+    tf_wait.timer_period: 0.02
+    path_proximity.max_start_distance: 0.60
+    white.track_width: 0.70
+    white.expected_half_width: 0.37
+    white.half_width_tolerance: 0.10
+    white.reference_fallback_enabled: true
+    lidar.scan_topic: /scan
+    lidar.fixed_frame: odom
+    lidar.pair_slop: 0.03
+    lidar.tf_timeout: 0.10
+    lidar.overlay_radius_px: 2
+    lidar.overlay_x_min: -0.5
+    lidar.overlay_x_max: 4.0
+    lidar.overlay_y_min: -2.0
+    lidar.overlay_y_max: 2.0
+    lidar.path_overlay_color_bgr: [255, 255, 0]

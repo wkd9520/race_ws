@@ -40,6 +40,35 @@ class LaserScan:
         self.header = Header()
 
 
+# --------------------------------------------------------- nav/geometry_msgs
+class Point:
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x, self.y, self.z = x, y, z
+
+
+class Quaternion:
+    def __init__(self, x=0.0, y=0.0, z=0.0, w=1.0):
+        self.x, self.y, self.z, self.w = x, y, z, w
+
+
+class Pose:
+    def __init__(self):
+        self.position = Point()
+        self.orientation = Quaternion()
+
+
+class PoseStamped:
+    def __init__(self):
+        self.header = Header()
+        self.pose = Pose()
+
+
+class Path:
+    def __init__(self):
+        self.header = Header()
+        self.poses = []
+
+
 # ---------------------------------------------------------------- cv_bridge
 class CvBridge:
     def imgmsg_to_cv2(self, msg, encoding='bgr8'):
@@ -164,6 +193,17 @@ def install():
     sen_msg.Image, sen_msg.LaserScan = Image, LaserScan
     sen.msg = sen_msg
 
+    nav = types.ModuleType('nav_msgs')
+    nav_msg = types.ModuleType('nav_msgs.msg')
+    nav_msg.Path = Path
+    nav.msg = nav_msg
+
+    geo = types.ModuleType('geometry_msgs')
+    geo_msg = types.ModuleType('geometry_msgs.msg')
+    geo_msg.PoseStamped, geo_msg.Pose = PoseStamped, Pose
+    geo_msg.Point, geo_msg.Quaternion = Point, Quaternion
+    geo.msg = geo_msg
+
     cvb = types.ModuleType('cv_bridge')
     cvb.CvBridge = CvBridge
 
@@ -171,6 +211,8 @@ def install():
         'rclpy': rclpy, 'rclpy.node': rclpy_node, 'rclpy.qos': rclpy_qos,
         'std_msgs': std, 'std_msgs.msg': std_msg,
         'sensor_msgs': sen, 'sensor_msgs.msg': sen_msg,
+        'nav_msgs': nav, 'nav_msgs.msg': nav_msg,
+        'geometry_msgs': geo, 'geometry_msgs.msg': geo_msg,
         'cv_bridge': cvb,
     }.items():
         sys.modules[k] = v

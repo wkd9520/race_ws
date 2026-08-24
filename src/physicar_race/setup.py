@@ -29,6 +29,7 @@ setup(
             'bev_lane_node = physicar_race.bev_lane_node:main',
             'bev_drive_node = physicar_race.bev_drive_node:main',
             'los_drive_node = physicar_race.los_drive_node:main',
+            'perception_v3_follow_node = physicar_race.perception_v3_follow_node:main',
             'hsv_tuner_node = physicar_race.hsv_tuner_node:main',
             'traffic_light_node = physicar_race.traffic_light_node:main',
             'lane_obstacle_node = physicar_race.lane_obstacle_node:main',

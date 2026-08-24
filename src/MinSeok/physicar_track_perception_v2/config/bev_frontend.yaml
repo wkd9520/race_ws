@@ -1,0 +1,86 @@
+physicar_track_perception_v2_bev:
+  ros__parameters:
+    # EXISTING VERIFIED VALUES from live Stage 3. SIM has no CameraInfo bridge.
+    camera.width: 480
+    camera.height: 360
+    camera.K: [201.38988018035889, 0.0, 240.0,
+               0.0, 201.38988733291626, 180.0,
+               0.0, 0.0, 1.0]
+    camera.D: [-0.045, -0.0001, -0.0003, -0.0001, 0.001]
+    bev.x_min: 0.10
+    bev.x_max: 2.00
+    bev.y_min: -0.75
+    bev.y_max: 0.75
+    bev.resolution: 0.01
+    ground_z: 0.0
+    sim_geometry.camera_height_correction_z: -0.018
+    projection.pitch_offset_deg: 2.7
+    projection.pitch_correction_frame: pan_local_y
+    fixed_pose.expected_pan: 0.0
+    fixed_pose.expected_tilt: -0.5236
+    fixed_pose.tolerance: 0.01
+    fixed_pose.require_expected: true
+    dynamic_pan.min: -0.5236
+    dynamic_pan.max: 0.5236
+    dynamic_pan.limit_tolerance: 0.001
+    tf_wait.timer_period: 0.02
+    tf_wait.max_pending_age: 0.25
+    # EXISTING VERIFIED VALUES from legacy live Stage 3 segmentation.
+    hsv.white.lower: [0, 0, 170]
+    hsv.white.upper: [179, 90, 255]
+    hsv.orange.lower: [5, 100, 100]
+    hsv.orange.upper: [30, 255, 255]
+    morphology.open_kernel: 3
+    morphology.close_kernel: 5
+    # Obvious image/component-noise rejection only; no track-role assumptions.
+    component.min_area: 8
+    component.min_valid_pixels: 3
+    component.min_valid_overlap: 0.70
+    # PROPOSED INITIAL VALUE: 5 BEV cells, inherited physical sampling scale.
+    canonical.spacing: 0.05
+    canonical.duplicate_tolerance: 1.0e-9
+    # STEP 3 frame-local BOTH geometry. No temporal identity or trusted width.
+    # 0.20 m derives from the existing five points at 0.05 m physical spacing.
+    both.usable_min_support: 0.20
+    both.usable_min_points: 5
+    # EXISTING VERIFIED VALUES from live Stage 3 configuration.
+    both.min_width: 0.60
+    both.max_width: 0.95
+    both.min_correspondences: 4
+    both.min_overlap_support: 0.15
+    # PROPOSED INITIAL VALUES; runtime validation required.
+    both.max_tangent_angle: 0.45
+    both.min_side_consistency: 0.80
+    both.max_width_spread: 0.15
+    both.ambiguity_score_margin: 0.05
+    both.center_spacing: 0.05
+    # STEP 4 trusted identity. All are proposed initial runtime values except
+    # the reused 0.12 m legacy physical continuity gate.
+    identity.initialization_frames: 3
+    identity.initialization_min_overlap_fraction: 0.50
+    identity.distance_gate: 0.12
+    identity.tangent_gate: 0.45
+    identity.min_overlap_support: 0.15
+    identity.min_accepted_support: 0.20
+    identity.max_continuation: 0.15
+    identity.max_gap: 0.075
+    # STEP 5.1 reuses the established corridor side-consistency and metric
+    # association scales. Runtime validation is still required.
+    identity.conflict_min_side_consistency: 0.80
+    identity.conflict_max_lateral_residual: 0.12
+    # STEP 5 width updates are BOTH-observed only.
+    width.initialization_frames: 3
+    width.ema_alpha: 0.20
+    width.update_gate: 0.12
+    # Canonical physical-support offset safety; proposed runtime values.
+    single.curvature_support: 0.10
+    single.persistence_span: 0.15
+    single.min_curvature_samples: 3
+    # STEP 5.4: R2-validated, bounded odom arc association rescue. It requires
+    # a current physical candidate and never creates a prediction-only path.
+    arc_prior.enabled: true
+    arc_prior.max_pending_wall_age: 1.25
+    pan_association_characterization.enabled: false
+    pan_association_characterization.directory: ''
+    side_gate_characterization.enabled: false
+    side_gate_characterization.directory: ''
