@@ -125,6 +125,10 @@ class PerceptionV3FollowNode(Node):
         self.create_subscription(Float32MultiArray, '/cones', self.on_cones, 10)
         self.pub_speed = self.create_publisher(Float64, '/speed', 10)
         self.pub_steer = self.create_publisher(Float64, '/steering', 10)
+        # 오버레이 노드가 "우리가 어디로 가려는지"를 그릴 수 있게 결정을 흘린다.
+        # [x_fwd, y_raw, y_used, steer, offset, valid]
+        self.pub_dbg = self.create_publisher(Float32MultiArray,
+                                             '/race/avoid_debug', 10)
         self.create_timer(1.0 / self.control_hz, self.tick)
         self.get_logger().info(
             'perception_v3_follow_node 시작 (MinSeok perception_v3 경로 순수추종)')
@@ -293,6 +297,9 @@ class PerceptionV3FollowNode(Node):
             self._steer = steer
 
             self._publish(self._speed, self._steer)
+            self.pub_dbg.publish(Float32MultiArray(data=[
+                float(x_fwd), float(y_lat), float(y_used),
+                float(self._steer), float(self._offset), 1.0]))
             self._log('LOS(%.2fm, %+.2fm) ld=%.2f  보임=%.2fm  '
                       'steer=%+.1f도  v=%.2f (한계 %.2f)  회피=%+.2fm %s'
                       % (x_fwd, y_used, ld, visible_m,

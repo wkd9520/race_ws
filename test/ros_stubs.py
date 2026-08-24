@@ -110,7 +110,11 @@ class _Pub:
         self.node, self.topic = node, topic
 
     def publish(self, msg):
-        self.node._sent.setdefault(self.topic, []).append(msg.data)
+        # Image 스텁에는 data 가 없고 _cv 에 배열이 들어 있다.
+        value = getattr(msg, 'data', None)
+        if value is None:
+            value = getattr(msg, '_cv', msg)
+        self.node._sent.setdefault(self.topic, []).append(value)
 
 
 class Node:

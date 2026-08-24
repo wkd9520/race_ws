@@ -107,6 +107,16 @@ def generate_launch_description():
         }],
     )
 
+    overlay = Node(
+        package=PKG, executable='race_overlay_node', name='race_overlay_node',
+        output='screen',
+        parameters=[{
+            'bev_x_min': 0.10, 'bev_x_max': 2.00,
+            'bev_y_min': -0.75, 'bev_y_max': 0.75,
+            'bev_resolution': 0.01,
+        }],
+    )
+
     follow = Node(
         package=PKG, executable='perception_v3_follow_node',
         name='perception_v3_follow_node', output='screen',
@@ -126,4 +136,4 @@ def generate_launch_description():
         }],
     )
 
-    return LaunchDescription(args + [perception_v3, cones, follow])
+    return LaunchDescription(args + [perception_v3, cones, follow, overlay])
