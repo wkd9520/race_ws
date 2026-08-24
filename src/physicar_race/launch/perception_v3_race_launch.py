@@ -55,7 +55,7 @@ def generate_launch_description():
         DeclareLaunchArgument('ld_max_m', default_value='1.30'),
         DeclareLaunchArgument('ld_k', default_value='0.90'),
         DeclareLaunchArgument('steer_sign', default_value='1.0'),
-        DeclareLaunchArgument('v_max', default_value='1.60'),
+        DeclareLaunchArgument('v_max', default_value='1.20'),
         DeclareLaunchArgument('v_min', default_value='0.45'),
         DeclareLaunchArgument('a_lat_max', default_value='3.0'),
     ]

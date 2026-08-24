@@ -47,7 +47,7 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('steer_sign', 1.0)
 
         # 속도: 횡가속 한계(v <= sqrt(a_lat_max * R))와 보이는 거리로 정한다.
-        self.declare_parameter('v_max', 1.60)
+        self.declare_parameter('v_max', 1.20)
         self.declare_parameter('v_min', 0.45)
         self.declare_parameter('a_lat_max', 3.0)
         self.declare_parameter('k_vis', 1.10)
