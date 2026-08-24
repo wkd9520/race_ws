@@ -151,17 +151,21 @@ class ConeBevNode(Node):
         # 열 방향으로 한 번이라도 흰색이면 그 열은 벽으로 본다
         cols = (band > 0).any(axis=0)
 
-        left = np.flatnonzero(cols[:col])         # 고깔보다 작은 열 = 오른쪽
-        right = np.flatnonzero(cols[col + 1:])    # 큰 열 = 왼쪽
+        # 열이 작을수록 y 가 크다(= 왼쪽). 헷갈리기 쉬운 지점이라 못 박아둔다.
+        #   col 0   -> y = +0.745  (왼쪽 끝)
+        #   col 149 -> y = -0.745  (오른쪽 끝)
+        smaller = np.flatnonzero(cols[:col])        # 고깔보다 작은 열 = 왼쪽
+        larger = np.flatnonzero(cols[col + 1:])     # 큰 열 = 오른쪽
 
-        # 열이 작을수록 y 가 크다(왼쪽). 헷갈리기 쉬운 지점이다.
-        if left.size:
-            right_wall_col = int(left[-1])        # 고깔 왼쪽으로 가장 가까운 열
-            left_wall = self.col_to_y(right_wall_col)
-        if right.size:
-            left_wall_col = int(right[0]) + col + 1
-            right_wall = self.col_to_y(left_wall_col)
+        if smaller.size:
+            # 왼쪽 벽 중 고깔에 가장 가까운 것 = 인덱스가 가장 큰 것
+            left_wall = self.col_to_y(int(smaller[-1]))
+        if larger.size:
+            # 오른쪽 벽 중 가장 가까운 것 = 인덱스가 가장 작은 것
+            right_wall = self.col_to_y(int(larger[0]) + col + 1)
 
+        # 못 찾은 쪽은 격자 가장자리로 남는다. 그건 '뚫려 있다'가 아니라
+        # '모른다'는 뜻이다 -- 컨트롤러가 track_half_m 로 한 번 더 조인다.
         return left_wall, right_wall
 
     def on_bev(self, msg):

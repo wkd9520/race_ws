@@ -74,7 +74,14 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('cone_window_m', 0.35)
         self.declare_parameter('cone_margin_m', 0.12)   # 고깔 옆 최소 여유
         self.declare_parameter('wall_margin_m', 0.10)   # 흰선 앞 최소 여유
-        self.declare_parameter('max_offset_m', 0.45)    # 오프셋 절대 상한
+        self.declare_parameter('max_offset_m', 0.30)    # 오프셋 절대 상한
+        # 흰선을 못 본 쪽을 'BEV 끝까지 뚫려 있다'로 읽으면 안 된다.
+        # cone_bev_node 는 못 찾으면 격자 가장자리(±0.75)를 벽으로 보고하는데,
+        # 그러면 **검출에 실패한 쪽이 오히려 넓어 보여** 그쪽으로 꺾는다.
+        # 실제로 1차선 고깔을 피하려다 좌측 흰선을 넘는 형태로 나타났다.
+        # 그래서 벽 위치를 경로 기준 트랙 반폭으로 한 번 더 조인다.
+        # 0.37 은 perception_v3.yaml 의 white.expected_half_width 와 같은 값.
+        self.declare_parameter('track_half_m', 0.37)
         # 붙을 땐 빠르게, 풀 땐 천천히. 검출이 깜빡여도 좌우로 안 떨리게.
         self.declare_parameter('offset_engage_rate', 1.20)   # m/s
         self.declare_parameter('offset_release_rate', 0.40)  # m/s
@@ -101,6 +108,7 @@ class PerceptionV3FollowNode(Node):
         self.cone_margin_m = float(p('cone_margin_m').value)
         self.wall_margin_m = float(p('wall_margin_m').value)
         self.max_offset_m = float(p('max_offset_m').value)
+        self.track_half_m = float(p('track_half_m').value)
         self.offset_engage_rate = float(p('offset_engage_rate').value)
         self.offset_release_rate = float(p('offset_release_rate').value)
         self.cones_timeout = float(p('cones_timeout_s').value)
@@ -177,6 +185,13 @@ class PerceptionV3FollowNode(Node):
         # 가장 방해되는 것부터 -- 그걸 피하면 대개 나머지도 풀린다.
         cone = min(near, key=lambda c: abs(c[1] - y_lat))
         cx, cy, half, wall_left, wall_right = cone
+
+        # 못 본 벽을 '뚫려 있다'로 읽지 않는다. cone_bev_node 는 흰선을
+        # 못 찾으면 격자 가장자리를 돌려주므로, 경로 기준 트랙 반폭으로
+        # 조인다. min/max 라 실제로 검출된(더 안쪽인) 벽은 그대로 살아남고,
+        # 못 찾아서 벌어진 값만 잘린다.
+        wall_left = min(wall_left, y_lat + self.track_half_m)
+        wall_right = max(wall_right, y_lat - self.track_half_m)
 
         blocked_lo = cy - half - self.cone_margin_m     # 고깔의 오른쪽 끝
         blocked_hi = cy + half + self.cone_margin_m     # 고깔의 왼쪽 끝

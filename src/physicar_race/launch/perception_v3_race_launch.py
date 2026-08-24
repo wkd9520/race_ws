@@ -86,7 +86,8 @@ def generate_launch_description():
         DeclareLaunchArgument('green_v_min', default_value='60'),
         DeclareLaunchArgument('cone_margin_m', default_value='0.12'),
         DeclareLaunchArgument('wall_margin_m', default_value='0.10'),
-        DeclareLaunchArgument('max_offset_m', default_value='0.45'),
+        DeclareLaunchArgument('max_offset_m', default_value='0.30'),
+        DeclareLaunchArgument('track_half_m', default_value='0.37'),
 
         # --- 카메라 틸트 고정 ---
         # V2 요구사항에 tilt -0.5236 rad (-30도) 가 required 로 명시돼 있다.
@@ -158,6 +159,7 @@ def generate_launch_description():
             'cone_margin_m': _f('cone_margin_m'),
             'wall_margin_m': _f('wall_margin_m'),
             'max_offset_m': _f('max_offset_m'),
+            'track_half_m': _f('track_half_m'),
         }],
     )
 
