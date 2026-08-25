@@ -91,7 +91,7 @@ class V3Node(Node):
             'bev.y_max':.75,'bev.resolution':.01,'ground_z':0.,
             'sim_geometry.camera_height_correction_z':-.018,
             'projection.pitch_offset_deg':2.8,
-            'tf_wait.max_pending_age':.25,'tf_wait.timer_period':.02,
+            'tf_wait.max_pending_age':.25,'tf_wait.allow_latest':False,'tf_wait.timer_period':.02,
             'path_proximity.max_start_distance':.60,
             'center_hybrid.enabled':True,
             'center_hybrid.join_gap':.30,
@@ -1366,8 +1366,36 @@ class V3Node(Node):
         message.data=json.dumps(diagnostic,sort_keys=True)
         self.control_status_pub.publish(message)
     def lookup(self,msg):
+        """이미지 시각에 딱 맞는 TF 를 찾는다.
+
+        원래는 정확한 시각만 허용한다. 카메라가 주행 중에 움직이면 그게
+        맞다 -- 100 ms 전 자세로 BEV 를 만들면 지면이 통째로 틀어진다.
+
+        그런데 우리 차는 주행 중 카메라가 **고정**이다(틸트 -30도, 팬 0도
+        로 잡아둔다). 그 경우 정확한 시각을 고집하는 값이 너무 크다.
+        실측:
+
+            images=71  immediate=5  pending=66      93%가 대기 큐
+
+        원인은 TF 스탬프가 joint_states 스탬프라는 것이다. 이미지는 30 ms
+        만에 도착하는데 그 시각의 joint_states 가 아직 안 와 있으면,
+        TF 가 따라올 때까지 프레임을 붙잡는다.
+
+        tf_allow_latest 를 켜면 정확한 시각이 없을 때 **가장 최근 TF** 로
+        대신한다. 카메라가 안 움직이면 최근 TF 와 정확한 시각의 TF 가
+        같으므로 잃는 것이 없다.
+
+        **카메라를 주행 중에 움직인다면 켜면 안 된다.** 그래서 기본은
+        꺼짐이고, 런치가 카메라를 고정으로 잡을 때만 켠다.
+        """
         stamp=Time.from_msg(msg.header.stamp)
+        latest_ok=bool(self.get_parameter('tf_wait.allow_latest').value)
         ready,_=self.tfbuf.can_transform('base_footprint','camera_optical_frame_corrected',stamp,timeout=Duration(seconds=0.0),return_debug_tuple=True)
+        if not ready and latest_ok:
+            zero=Time()
+            if self.tfbuf.can_transform('base_footprint','camera_optical_frame_corrected',zero,timeout=Duration(seconds=0.0)):
+                self.stats['tf_latest_used'] = self.stats.get('tf_latest_used',0)+1
+                return self.tfbuf.lookup_transform('base_footprint','camera_optical_frame_corrected',zero,timeout=Duration(seconds=0.0))
         if not ready: raise RuntimeError('exact_tf_not_ready')
         if bool(self.get_parameter('center_history.enabled').value):
             fixed=str(self.get_parameter('lidar.fixed_frame').value)

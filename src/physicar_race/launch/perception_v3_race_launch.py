@@ -124,6 +124,19 @@ def generate_launch_description():
         # 를 먼저 보고 정할 것. immediate 가 대부분이면 0.06 으로 내린다.
         DeclareLaunchArgument('tf_max_pending_age', default_value='0.25'),
         DeclareLaunchArgument('tf_retry_period', default_value='0.02'),
+        # 정확한 시각의 TF 가 없으면 **가장 최근 TF** 로 대신한다.
+        #
+        # 실측: images=71 immediate=5 pending=66 -- 93%가 대기 큐를 탄다.
+        # TF 스탬프는 joint_states 스탬프인데, 이미지는 30 ms 만에 오고
+        # 그 시각의 joint_states 는 아직 안 와 있다. 그래서 매 프레임이
+        # TF 가 따라올 때까지 기다린다. 그게 지연의 대부분이다
+        # (평균 0.23 중 0.14).
+        #
+        # 카메라가 주행 중 움직이면 이걸 켜면 안 된다 -- 100 ms 전 자세로
+        # BEV 를 만들면 지면이 통째로 틀어진다. 우리 차는 주행 중 카메라가
+        # 고정이라(틸트 -30도, 팬 0도) 최근 TF 와 정확한 시각의 TF 가
+        # 같고, 잃는 것이 없다.
+        DeclareLaunchArgument('tf_allow_latest', default_value='false'),
 
         # --- 경로 이력 (odom 의존) ---
         # 최근 중앙 경로를 odom 좌표계에 저장해뒀다가, 검출이 순간적으로
@@ -384,6 +397,7 @@ def generate_launch_description():
             'bev.resolution': _f('bev_resolution'),
             'projection.pitch_offset_deg': _f('pitch_offset_deg'),
             'center_history.enabled': _b('center_history'),
+            'tf_wait.allow_latest': _b('tf_allow_latest'),
             'tf_wait.max_pending_age': _f('tf_max_pending_age'),
             'tf_wait.timer_period': _f('tf_retry_period'),
             'sim_geometry.camera_height_correction_z':
