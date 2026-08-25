@@ -143,18 +143,35 @@ procs = [e for e in ents if isinstance(e, ExecuteProcess)]
 timers = [e for e in ents if isinstance(e, TimerAction)]
 
 
-print('\n[1] MinSeok 님 launch 를 수정 없이 include 하는가')
-check('include 가 정확히 하나', len(includes) == 1, '(%d개)' % len(includes))
-if includes:
-    inc = includes[0]
-    check('  그의 perception_v3.launch.py 를 부른다',
-          inc.source.path.endswith(os.path.join(
-              'physicar_track_perception_v3', 'launch',
-              'perception_v3.launch.py')),
-          '(%s)' % inc.source.path)
-    for key in ('use_sim_time', 'camera_topic', 'joint_states_topic',
-                'scan_topic'):
-        check('  %s 를 그대로 넘긴다' % key, key in inc.launch_arguments)
+print('\n[1] MinSeok 님 노드 둘을 그대로 띄우는가')
+# include 대신 그의 노드를 직접 띄운다. include 로는 bev.* 를 덮어쓸 수
+# 없어서, 값 하나 바꿀 때마다 그의 yaml 을 손으로 고쳐야 했기 때문이다.
+# 코드는 안 건드리지만 **구성은 그의 launch 와 같아야** 한다.
+by_pkg = {n.kw.get('package'): n for n in nodes}
+
+check('camera_corrected_tf_broadcaster 를 띄운다',
+      'physicar_camera_tf_correction' in by_pkg)
+check('bev_frontend_node 를 띄운다', 'physicar_track_perception_v3' in by_pkg)
+
+v3 = by_pkg.get('physicar_track_perception_v3')
+if v3:
+    check('  실행파일이 bev_frontend_node',
+          v3.kw.get('executable') == 'bev_frontend_node',
+          '(%s)' % v3.kw.get('executable'))
+    # yaml 최상위 키가 이 이름이라, 다르면 yaml 파라미터가 통째로 안 먹는다
+    check('  노드 이름이 yaml 키와 같다 ★',
+          v3.kw.get('name') == 'physicar_track_perception_v3',
+          '(%s)' % v3.kw.get('name'))
+    params = v3.kw.get('parameters') or []
+    check('  yaml 을 먼저 읽는다',
+          bool(params) and isinstance(params[0], str)
+          and params[0].endswith('perception_v3.yaml'))
+    check('  그 위에 우리 값을 덮는다 (뒤가 이긴다)',
+          len(params) >= 2 and isinstance(params[1], dict))
+    remaps = dict(v3.kw.get('remappings') or [])
+    check('  카메라/조인트 토픽을 리맵한다',
+          '/camera/image_raw' in remaps and '/joint_states' in remaps)
+check('include 는 이제 안 쓴다', len(includes) == 0, '(%d개)' % len(includes))
 
 
 print('\n[2] 우리 노드 셋이 다 있는가')
@@ -164,28 +181,51 @@ for want in ('cone_bev_node', 'perception_v3_follow_node',
     check('%s' % want, want in names)
 
 
-print('\n[3] 격자 값이 세 곳에서 같은가 ★')
-# 다르면 고깔/주행선 좌표가 통째로 틀어진다. 조용히 어긋나는 종류의 실수라
-# 여기서 잡아둔다.
-grids = {}
-for n in nodes:
-    params = n.kw.get('parameters') or [{}]
-    d = params[0] if isinstance(params[0], dict) else {}
-    g = {k: v for k, v in d.items() if k.startswith('bev_')}
-    if g:
-        grids[n.kw.get('name')] = g
+print('\n[3] 격자를 세 노드가 같은 인자에서 받는가 ★')
+# 예전엔 값을 세 곳에 손으로 적어뒀다. 하나만 고치면 조용히 어긋나고,
+# 고깔/주행선 좌표가 통째로 틀어지는데 화면상으로는 그럴듯해 보인다.
+# 이제는 launch 인자 하나에서 셋이 같이 받아야 한다.
+SUFFIX = ('x_min', 'x_max', 'y_min', 'y_max', 'resolution')
 
-check('격자를 쓰는 노드가 둘', len(grids) == 2, '(%s)' % sorted(grids))
-if len(grids) == 2:
+
+def grid_of(node):
+    """노드가 받는 격자를 {끝말: 인자이름} 으로 뽑는다.
+
+    perception_v3 는 'bev.x_min', 우리 노드는 'bev_x_min' 이라 이름이
+    다르다. 끝말로 맞춰야 셋을 비교할 수 있다.
+    """
+    for entry in (node.kw.get('parameters') or []):
+        if not isinstance(entry, dict):
+            continue
+        out = {}
+        for key, val in entry.items():
+            if not (key.startswith('bev_') or key.startswith('bev.')):
+                continue
+            for suf in SUFFIX:
+                if key.endswith(suf):
+                    # ParameterValue(LaunchConfiguration(...)) 에서 인자 이름
+                    out[suf] = getattr(getattr(val, 'value', val), 'name', val)
+        if out:
+            return out
+    return None
+
+
+grids = {n.kw.get('name'): grid_of(n) for n in nodes}
+grids = {k: v for k, v in grids.items() if v}
+check('격자를 쓰는 노드가 셋', len(grids) == 3, '(%s)' % sorted(grids))
+
+if len(grids) == 3:
     vals = list(grids.values())
-    check('  두 노드의 격자가 완전히 같다 ★', vals[0] == vals[1],
+    check('  셋이 같은 launch 인자를 받는다 ★', vals[0] == vals[1] == vals[2],
           '(%s)' % vals[0])
-    check('  perception_v3.yaml 과 같다 (x 0.10~2.00, y ±0.75, 0.01)',
-          vals[0].get('bev_x_min') == 0.10
-          and vals[0].get('bev_x_max') == 2.00
-          and vals[0].get('bev_y_min') == -0.75
-          and vals[0].get('bev_y_max') == 0.75
-          and vals[0].get('bev_resolution') == 0.01)
+    check('  리터럴이 아니라 인자다 (한 곳만 고치면 된다) ★',
+          all(isinstance(v, str) for v in vals[0].values()),
+          '(%s)' % list(vals[0].values())[0])
+
+for key in ('bev_x_min', 'bev_x_max', 'bev_y_min', 'bev_y_max',
+            'bev_resolution', 'pitch_offset_deg',
+            'camera_height_correction_z'):
+    check('  %s 인자가 있다' % key, key in args, '(기본 %s)' % args.get(key))
 
 
 print('\n[4] 카메라 틸트를 이 launch 가 건드리지 않는가')
