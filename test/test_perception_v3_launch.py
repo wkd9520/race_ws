@@ -38,6 +38,30 @@ class DeclareLaunchArgument:
         self.default_value = default_value
 
 
+class PythonExpression:
+    """조건식을 평가한다. 실제 launch 도 문자열을 이어붙여 eval 한다.
+
+    start_sequence_node 와 camera_tilt_publisher 가 동시에 뜨면 둘이
+    /camera/tilt 를 서로 다른 값으로 밀어서 카메라가 떤다. 그 조건이
+    실제로 맞는지 보려면 식을 평가할 수 있어야 한다.
+    """
+
+    def __init__(self, parts):
+        self.parts = parts
+
+    def evaluate(self, values):
+        text = ''
+        for part in self.parts:
+            if isinstance(part, LaunchConfiguration):
+                text += str(values.get(part.name, ''))
+            else:
+                text += str(part)
+        return bool(eval(text, {'__builtins__': {}}, {}))
+
+    def __repr__(self):
+        return '<expr %s>' % (self.parts,)
+
+
 class ExecuteProcess:
     def __init__(self, cmd=None, **kw):
         self.cmd = cmd or []
@@ -97,6 +121,7 @@ def install():
 
     subs = types.ModuleType('launch.substitutions')
     subs.LaunchConfiguration = LaunchConfiguration
+    subs.PythonExpression = PythonExpression
 
     sources = types.ModuleType('launch.launch_description_sources')
     sources.PythonLaunchDescriptionSource = PythonLaunchDescriptionSource
@@ -305,6 +330,38 @@ check('  camera_tilt_publisher 를 띄운다', len(tilt_nodes) == 1)
 if tilt_nodes:
     check('    조건부다 (로스백 재생 땐 불필요)',
           tilt_nodes[0].kw.get('condition') is not None)
+
+# start_sequence_node 도 /camera/tilt 를 민다. 둘이 동시에 뜨면 서로 다른
+# 값을 밀어서 카메라가 떤다. 조건식을 실제로 평가해서 확인한다.
+seq_node = next((n for n in nodes
+                 if n.kw.get('executable') == 'start_sequence_node'), None)
+check('  start_sequence_node 를 띄운다', seq_node is not None)
+
+
+def runs(node, **overrides):
+    """이 설정에서 그 노드가 실제로 뜨는가."""
+    values = {k: v for k, v in args.items()}
+    values.update(overrides)
+    cond = node.kw.get('condition')
+    if cond is None:
+        return True
+    predicate = cond.predicate
+    if isinstance(predicate, PythonExpression):
+        return predicate.evaluate(values)
+    return str(values.get(predicate.name, '')).lower() == 'true'
+
+
+if seq_node is not None and tilt_nodes:
+    tilt = tilt_nodes[0]
+    both = runs(tilt, traffic_light='true', hold_tilt='true') and         runs(seq_node, traffic_light='true', hold_tilt='true')
+    check('  둘이 절대 같이 뜨지 않는다 ★', not both,
+          '(/camera/tilt 를 서로 다른 값으로 밀면 카메라가 떤다)')
+    check('  신호등을 켜면 start_sequence 가 틸트를 쥔다',
+          runs(seq_node, traffic_light='true')
+          and not runs(tilt, traffic_light='true', hold_tilt='true'))
+    check('  신호등을 끄면 hold_tilt 가 예전처럼 동작한다',
+          runs(tilt, traffic_light='false', hold_tilt='true')
+          and not runs(tilt, traffic_light='false', hold_tilt='false'))
 
 
 print('\n[4] 틸트는 MinSeok 님 노드에 맡긴다')
