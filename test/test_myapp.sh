@@ -53,9 +53,9 @@ mk "$T/b.sh" 0 "$T/ros/setup.bash"
 out="$(PATH="$T/bin:$PATH" bash "$T/b.sh" 2>&1)"; rc=$?
 chk "정상 경로 -> exit 0" "$([ $rc -eq 0 ] && echo 1 || echo 0)" "(rc=$rc)"
 chk "ros2 launch 호출됨" \
-    "$(echo "$out" | grep -q 'ROS2_CALLED: launch physicar_race race_launch.py' && echo 1 || echo 0)"
+    "$(echo "$out" | grep -q 'ROS2_CALLED: launch physicar_race perception_v3_race_launch.py' && echo 1 || echo 0)"
 chk "launch 인자 전달됨" \
-    "$(echo "$out" | grep -q 'require_green:=true' && echo 1 || echo 0)"
+    "$(echo "$out" | grep -q 'v_max:=1.2' && echo 1 || echo 0)"
 chk "colcon 안 부름 (BOOTSTRAP=0)" \
     "$(echo "$out" | grep -q 'COLCON_CALLED' && echo 0 || echo 1)"
 chk "PHYSICAR_SETUP 없어도 계속 진행" \

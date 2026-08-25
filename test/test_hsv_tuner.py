@@ -93,12 +93,16 @@ v2, sw2 = tuner.normalize(vals())
 check('정상 범위는 그대로', not sw2 and v2['yellow_h_min'] == 18)
 
 print('\n[6] launch 인자 출력')
-line = tuner.launch_args(vals(white_v_min=120, yellow_s_min=40))
-check('패키지·launch 이름 포함', 'physicar_race race_launch.py' in line)
-check('바꾼 값이 반영됨', 'lane_white_v_min:=120' in line and
-      'lane_yellow_s_min:=40' in line)
-check('ROI 를 비율로 변환', 'lane_roi_top_frac:=0.55' in line,
-      '(%s)' % [t for t in line.split() if 'roi' in t])
+line = tuner.launch_args(vals(yellow_s_min=40, yellow_h_min=45))
+check('지금 쓰는 launch 를 가리킨다',
+      'physicar_race perception_v3_race_launch.py' in line)
+check('색상 슬라이더가 green_* 로 나간다 ★',
+      'green_h_min:=45' in line and 'green_s_min:=40' in line,
+      '(%s)' % [t for t in line.split() if 'green' in t])
+# 흰선/주황은 MinSeok 님 노드에 하드코딩이라 launch 인자가 없다.
+# 없는 인자를 출력하면 붙여넣었을 때 그냥 에러가 난다.
+check('  없는 인자를 만들어내지 않는다',
+      'lane_' not in line and 'white' not in line)
 
 print('\n' + '=' * 58)
 if FAILS:

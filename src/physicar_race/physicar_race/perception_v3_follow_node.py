@@ -9,12 +9,14 @@ physicar_camera_tf_correction)는 손대지 않고 그대로 두고, 이 노드�
 
 `/perception_v3/path` 의 점은 이미 `base_footprint` 미터 좌표계다
 (+X 전방, +Y 좌측 -- INSTALL_KO.md "현재 PhysiCar source/interface에서는
-base_footprint의 +X가 forward, +Y가 left입니다"). `los_drive_node.py` 가
-BEV 픽셀에서 미터로 변환하던 단계가 여기서는 필요 없다 -- 좌표계가 이미
-같다. 그래서 조향/속도 물리식(순수추종, 횡가속 한계)만 `los_drive_node.py`
-에서 그대로 옮겨왔다. 두 노드가 같은 수식을 쓰는 건 우연이 아니라, 인지
-방식이 달라도(가로 자유공간 추적 vs MinSeok 님의 ORANGE 중앙선 추적)
-제어가 필요로 하는 입력은 결국 "전방 d 미터의 목표점 하나"로 같기 때문이다.
+base_footprint의 +X가 forward, +Y가 left입니다"). BEV 픽셀에서 미터로 변환하는
+단계가 필요 없다 -- 좌표계가 이미 같다.
+
+조향/속도 물리식(순수추종, 횡가속 한계)은 이 저장소의 이전 스택
+`los_drive_node.py` 에서 그대로 가져왔다(정리하면서 뺐다. 커밋 7f35d12 에
+있음). 인지 방식이 달라도(가로 자유공간 추적 vs MinSeok 님의 ORANGE 중앙선
+추적) 제어가 필요로 하는 입력은 결국 "전방 d 미터의 목표점 하나"로 같기
+때문에 그대로 옮겨진다.
 """
 
 import math
@@ -26,7 +28,7 @@ from nav_msgs.msg import Path
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float32MultiArray, Float64
 
-WHEELBASE = 0.18            # m -- 드라이버 계층과 같은 값 (los_drive_node 와 동일)
+WHEELBASE = 0.18            # m -- 드라이버 계층과 같은 값
 MAX_STEER = math.radians(20.0)
 MIN_SPEED = 0.3             # ESC 불감대
 MAX_SPEED = 3.0
@@ -39,7 +41,7 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('control_hz', 30.0)
 
         # 전방주시거리 = ld_k * v, [ld_min, ld_max] 로 자름.
-        # los_drive_node 와 같은 상충: 짧으면 코너를 못 보고, 길면
+        # 상충이 있다: 짧으면 코너를 못 보고, 길면
         # atan(2L sin a / l_d) 의 분모가 커져 조향이 약해진다.
         self.declare_parameter('ld_min_m', 0.35)
         self.declare_parameter('ld_max_m', 1.30)
@@ -228,7 +230,7 @@ class PerceptionV3FollowNode(Node):
                            min(self.max_offset_m, self._offset))
         return self._offset
 
-    # ------------------------------------------------------------ 물리 (los_drive_node 와 동일)
+    # ------------------------------------------------------------ 물리
 
     @staticmethod
     def pure_pursuit(x_fwd, y_lat):
@@ -255,8 +257,8 @@ class PerceptionV3FollowNode(Node):
     def lookahead_point(points, lookahead_m):
         """차량 원점(0,0)에서 누적 거리로 전방주시점을 고른다.
 
-        점들은 이미 base_footprint 미터 좌표라 los_drive_node.los_point()
-        처럼 행(row)->거리 변환이 필요 없다. 그만큼 더 단순하다.
+        점들은 이미 base_footprint 미터 좌표라 BEV 행(row)->거리 변환이
+        필요 없다. 그만큼 더 단순하다.
         """
         if not points:
             return None

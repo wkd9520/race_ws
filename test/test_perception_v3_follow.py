@@ -6,9 +6,8 @@
 그 산출물(`/perception_v3/path`)을 받아 `/speed` + `/steering` 으로 바꾸는
 이 저장소 몫의 코드뿐이다.
 
-순수추종/횡가속 공식은 los_drive_node.py 와 동일하다 -- 그쪽에서 이미
-손계산으로 검증했으므로 여기서는 좌표계가 이미 미터라는 점(경로->조향
-연결부)과 유실/서행/정지 상태기계만 집중해서 본다.
+순수추종/횡가속 공식은 손계산으로 확인하고, 나머지는 좌표계가 이미 미터라는
+점(경로->조향 연결부)과 유실/서행/정지 상태기계를 본다.
 """
 import importlib.util
 import math
@@ -61,9 +60,8 @@ def tick(n_):
     n_._timers[0][1]()
 
 
-print('\n[1] 순수추종/횡가속 - los_drive_node 와 같은 손계산')
+print('\n[1] 순수추종/횡가속 - 손계산과 맞는가')
 n = node()
-# los_drive_node 의 [1]에서 검증한 것과 동일한 케이스
 d = math.degrees(n.pure_pursuit(1.0, 0.5))
 check('손계산과 일치 (x=1.0 y=+0.5 -> 8.20도)', abs(d - 8.20) < 0.05, '(%.2f도)' % d)
 check('왼쪽 점 -> 양수, 오른쪽 점 -> 음수',
@@ -125,8 +123,7 @@ check('유실 직후 마지막 조향 유지 ★',
 check('  서행한다', abs(n4._sent['/speed'][-1] - n4.grace_speed) < 1e-9,
       '(%.2f)' % n4._sent['/speed'][-1])
 
-# grace_s 를 넘기면 정지 -- race_judgment_node 테스트와 같은 방식으로
-# _last_ok_time 을 과거로 밀어 넣는다
+# grace_s 를 넘기면 정지 -- _last_ok_time 을 과거로 밀어 넣는다
 n4._last_ok_time = time.time() - (n4.grace_s + 0.1)
 tick(n4)
 check('오래 유실되면 정지', n4._sent['/speed'][-1] == 0.0)

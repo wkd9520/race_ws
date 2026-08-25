@@ -105,16 +105,21 @@ def normalize(values):
 
 
 def launch_args(v):
-    """지금 값을 그대로 붙여 넣을 수 있는 launch 인자 한 줄."""
+    """지금 값을 그대로 붙여 넣을 수 있는 launch 인자 한 줄.
+
+    지금 스택에서 launch 인자로 바꿀 수 있는 색은 **초록 고깔뿐**이다.
+    흰선과 주황 중앙선 임계값은 MinSeok 님 `bev_frontend_node.py` 안에
+    하드코딩돼 있어(파라미터가 아니다) 여기서 못 바꾼다 -- 그 파일은
+    수정 금지이므로, 안 맞으면 별도로 판단해야 한다.
+
+    그래서 색상 슬라이더(yellow_*)를 **고깔에 맞춰 돌린 값**을 green_* 로
+    내보낸다. 이 노드의 현재 쓰임새가 그것이다.
+    """
     return (
-        'ros2 launch physicar_race race_launch.py \\\n'
-        '  lane_roi_top_frac:=%.2f \\\n'
-        '  lane_white_s_max:=%d lane_white_v_min:=%d \\\n'
-        '  lane_yellow_h_min:=%d lane_yellow_h_max:=%d \\\n'
-        '  lane_yellow_s_min:=%d lane_yellow_v_min:=%d'
-        % (v['roi_top_pct'] / 100.0,
-           v['white_s_max'], v['white_v_min'],
-           v['yellow_h_min'], v['yellow_h_max'],
+        'ros2 launch physicar_race perception_v3_race_launch.py \\\n'
+        '  green_h_min:=%d green_h_max:=%d \\\n'
+        '  green_s_min:=%d green_v_min:=%d'
+        % (v['yellow_h_min'], v['yellow_h_max'],
            v['yellow_s_min'], v['yellow_v_min'])
     )
 

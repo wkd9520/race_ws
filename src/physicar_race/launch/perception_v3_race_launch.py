@@ -16,17 +16,19 @@
 노드가 이미 잡고 있으면 publish_tilt:=false 로 끄고 그쪽에 맡길 것 --
 둘이 동시에 보내면 값이 번갈아 들어간다.
 
-다른 주행 스택(race_launch.py, bev_launch.py, los_launch.py)과 **동시에
-띄우면 안 된다.** 전부 /speed 를 발행한다.
+/speed 를 발행하는 노드는 항상 하나여야 한다. 이전 launch 가 안 죽었으면
+명령이 번갈아 들어가 주행이 망가진다:
+
+    ros2 topic info /speed --verbose | grep -c "Node name"   # 2 이상이면 충돌
 
 ━━━ 먼저 확인할 것 ━━━
 
 이 인지 스택은 특정 TF 트리와 토픽을 전제한다(INSTALL_KO.md 1절):
 `/camera/image_raw`, `/joint_states`(camera_tilt_joint 포함), `/scan`,
 `/clock`, 그리고 `odom -> base_footprint`, `base_footprint <->
-camera_optical_frame_corrected` TF. 우리 기존 노드들(centroid_follow_node,
-los_drive_node)은 TF를 전혀 안 썼으므로, 이 시뮬레이터가 그 트리를 실제로
-주는지 **띄우기 전에 반드시 확인**해야 한다.
+camera_optical_frame_corrected` TF. 이 저장소의 이전 스택들은 TF를 전혀 안
+썼으므로, 이 시뮬레이터가 그 트리를 실제로 주는지 **띄우기 전에 반드시
+확인**해야 한다.
 
     ros2 run rclpy 대신 --
     bash scripts/preflight_runtime.sh
@@ -68,7 +70,7 @@ def generate_launch_description():
         DeclareLaunchArgument('joint_states_topic', default_value='/joint_states'),
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
-        # --- 우리 컨트롤러: los_drive_node 와 같은 물리, 같은 튜닝 이름 ---
+        # --- 우리 컨트롤러 ---
         DeclareLaunchArgument('control_hz', default_value='30.0'),
         DeclareLaunchArgument('ld_min_m', default_value='0.35'),
         DeclareLaunchArgument('ld_max_m', default_value='1.30'),

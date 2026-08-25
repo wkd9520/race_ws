@@ -22,14 +22,12 @@ PHYSICAR_SETUP="/opt/physicar/install/setup.bash"   # 없으면 건너뜀
 
 # 실행할 launch 와 인자. 토픽 이름/신호등 유무/코스 치수는 여기만 고치면 된다.
 LAUNCH_PKG="physicar_race"
-LAUNCH_FILE="race_launch.py"
+LAUNCH_FILE="perception_v3_race_launch.py"
 LAUNCH_ARGS=(
-  "image_topic:=/camera/image_raw"
+  "camera_topic:=/camera/image_raw"
   "scan_topic:=/scan"
-  "require_green:=true"      # 신호등 없는 맵이면 false
-  "lane_width_m:=0.50"       # 8/18 코스 규격 실측값으로 교체
-  "front_offset_deg:=0.0"    # 라이다 정면 기준각
-  "v_max:=1.5"               # 안정되면 3.0 까지
+  "v_max:=1.2"               # 안정되면 올릴 것
+  "open_rqt:=false"          # 무인 실행이므로 GUI 는 끈다
 )
 
 log() { echo "[myapp] $*"; }
