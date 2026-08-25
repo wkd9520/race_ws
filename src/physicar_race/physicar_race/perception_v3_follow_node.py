@@ -48,15 +48,21 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('ld_k', 0.90)
         self.declare_parameter('steer_sign', 1.0)
 
-        # 출발 신호등. 초록 원을 볼 때까지 안 움직인다.
+        # 출발 허가. race/go 가 True 가 될 때까지 안 움직인다.
         #
-        # 래치다 -- 한 번 초록을 보면 그 뒤로는 신호등을 아예 안 본다.
-        # 코스 규정상 신호등은 출발 시점에만 있고, 주행 중에 초록이
-        # 가려지거나 시야를 벗어났다고 차를 세우면 그게 더 위험하다.
+        # 신호등을 **직접 안 보는** 이유가 있다. 초록을 본 그 순간 카메라는
+        # 아직 신호등 쪽(오른쪽)을 향하고 있다. 거기서 바로 출발하면 서보가
+        # 트랙으로 내려가는 동안 엉뚱한 곳의 BEV 로 조향한다. 출발 첫 순간이
+        # 제일 위험한데 거기서 쓰레기를 먹는 셈이다.
         #
-        # 기본값이 False 인 이유: 신호등 노드가 안 떠 있는데 True 면
-        # 차가 영원히 안 움직인다. 런치가 traffic_light 인자와 묶어서
-        # 켠다 -- 둘이 항상 같이 켜지고 같이 꺼진다.
+        # start_sequence_node 가 카메라가 다 돌았는지까지 확인하고 나서
+        # race/go 를 올린다. 이 노드는 그 한 신호만 본다.
+        #
+        # 래치다 -- 한 번 올라가면 안 내린다. 주행 중에 이 신호가 끊겼다고
+        # 차를 세우면 그게 더 위험하다.
+        #
+        # 기본값이 False 인 이유: 그 노드가 안 떠 있는데 True 면 차가
+        # 영원히 안 움직인다. 런치가 traffic_light 인자와 묶어서 켠다.
         self.declare_parameter('wait_for_green', False)
 
         # 속도: 횡가속 한계(v <= sqrt(a_lat_max * R))와 보이는 거리로 정한다.
@@ -146,8 +152,7 @@ class PerceptionV3FollowNode(Node):
         self.create_subscription(Bool, '/perception_v3/debug/path_valid',
                                  self.on_valid, 10)
         self.create_subscription(Float32MultiArray, '/cones', self.on_cones, 10)
-        self.create_subscription(String, 'traffic/light_state',
-                                 self.on_light, 10)
+        self.create_subscription(Bool, 'race/go', self.on_go, 10)
         self.pub_speed = self.create_publisher(Float64, '/speed', 10)
         self.pub_steer = self.create_publisher(Float64, '/steering', 10)
         # 오버레이 노드가 "우리가 어디로 가려는지"를 그릴 수 있게 결정을 흘린다.
@@ -308,7 +313,7 @@ class PerceptionV3FollowNode(Node):
         # 엉뚱한 방향으로 튄다.
         if not self._green_seen:
             self._publish(0.0, 0.0)
-            self.get_logger().info('신호 대기 중 (초록 원을 기다린다)',
+            self.get_logger().info('출발 대기 중 (race/go 를 기다린다)',
                                    throttle_duration_sec=2.0)
             return
 
@@ -361,12 +366,12 @@ class PerceptionV3FollowNode(Node):
         self._publish(0.0, 0.0)
         self.get_logger().warn('경로 없음 - 정지', throttle_duration_sec=1.0)
 
-    def on_light(self, msg):
-        """초록을 한 번 보면 래치를 걸고, 그 뒤로는 신호등을 안 본다."""
-        if self._green_seen or msg.data != 'GREEN':
+    def on_go(self, msg):
+        """출발 허가가 한 번 오면 래치를 걸고 그 뒤로는 안 본다."""
+        if self._green_seen or not msg.data:
             return
         self._green_seen = True
-        self.get_logger().info('초록 신호 확인 -- 출발한다')
+        self.get_logger().info('출발 허가 -- 주행을 시작한다')
 
     def _publish(self, speed, steer):
         if speed == 0.0:

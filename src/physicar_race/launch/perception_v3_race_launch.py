@@ -77,6 +77,7 @@ camera_optical_frame_corrected` TF. 이 저장소의 이전 스택들은 TF를 �
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
+from launch.substitutions import PythonExpression
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -205,6 +206,17 @@ def generate_launch_description():
         DeclareLaunchArgument('traffic_require_circle', default_value='true'),
         # 검출이 안 되면 켠다. 화면의 실측 H/S/V 를 로그로 뽑아준다.
         DeclareLaunchArgument('traffic_probe', default_value='false'),
+
+        # --- 출발 카메라 자세 ---
+        # 신호등은 정지선 오른쪽, 트랙은 아래. 카메라 하나로 둘 다 못 봐서
+        # 순서대로 본다. 팬은 ROS 규약대로 왼쪽이 양수라 오른쪽은 음수다.
+        # 서보가 반대로 돌면 부호만 뒤집으면 된다.
+        DeclareLaunchArgument('aim_pan_degrees', default_value='-25.0'),
+        DeclareLaunchArgument('aim_tilt_degrees', default_value='0.0'),
+        # 카메라가 실제로 다 돌았는지 joint_states 로 확인하고 출발한다.
+        # 명령을 보냈다고 카메라가 그 자리에 있는 게 아니다.
+        DeclareLaunchArgument('settle_tolerance_deg', default_value='3.0'),
+        DeclareLaunchArgument('turn_timeout_s', default_value='3.0'),
         DeclareLaunchArgument('green_h_min', default_value='40'),
         DeclareLaunchArgument('green_h_max', default_value='85'),
         DeclareLaunchArgument('green_s_min', default_value='80'),
@@ -246,7 +258,11 @@ def generate_launch_description():
             'use_sim_time': _b('use_sim_time'),
             'tilt_degrees': _f('tilt_degrees'),
         }],
-        condition=IfCondition(LaunchConfiguration('hold_tilt')),
+        # traffic_light 를 켜면 start_sequence_node 가 틸트를 쥔다.
+        # 둘이 같이 돌면 /camera/tilt 를 서로 다른 값으로 밀어 카메라가 떤다.
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('hold_tilt'), "' == 'true' and '",
+            LaunchConfiguration('traffic_light'), "' != 'true'"])),
     )
 
     tf_broadcaster = Node(
@@ -306,6 +322,24 @@ def generate_launch_description():
             'green_s_min': _i('green_s_min'),
             'green_v_min': _i('green_v_min'),
             'publish_debug': _b('debug_view'),
+        }],
+    )
+
+    # 출발 절차. 신호등 자세 -> 초록 -> 트랙 자세 -> 출발 허가.
+    #
+    # 이 노드가 팬과 틸트를 **둘 다** 쥔다. camera_tilt_publisher 와 같이
+    # 돌면 둘이 /camera/tilt 를 서로 다른 값으로 밀어서 카메라가 떨린다.
+    # 그래서 아래 tilt_hold 는 traffic_light 가 꺼졌을 때만 뜬다.
+    start_sequence = Node(
+        package=PKG, executable='start_sequence_node',
+        name='start_sequence_node', output='screen',
+        condition=IfCondition(LaunchConfiguration('traffic_light')),
+        parameters=[{
+            'aim_pan_degrees': _f('aim_pan_degrees'),
+            'aim_tilt_degrees': _f('aim_tilt_degrees'),
+            'drive_tilt_degrees': _f('tilt_degrees'),
+            'settle_tolerance_deg': _f('settle_tolerance_deg'),
+            'turn_timeout_s': _f('turn_timeout_s'),
         }],
     )
 
@@ -379,4 +413,4 @@ def generate_launch_description():
 
     return LaunchDescription(
         args + [tilt_hold, tf_broadcaster, perception_v3,
-                cones, traffic, follow, overlay, rqt])
+                cones, traffic, start_sequence, follow, overlay, rqt])

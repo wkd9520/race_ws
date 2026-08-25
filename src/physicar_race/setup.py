@@ -28,6 +28,7 @@ setup(
             'race_overlay_node = physicar_race.race_overlay_node:main',
             'hsv_tuner_node = physicar_race.hsv_tuner_node:main',
             'traffic_light_node = physicar_race.traffic_light_node:main',
+            'start_sequence_node = physicar_race.start_sequence_node:main',
         ],
     },
 )
