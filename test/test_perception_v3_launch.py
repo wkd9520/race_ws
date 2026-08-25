@@ -248,7 +248,7 @@ check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
 check('격자가 라즈베리파이용으로 줄어 있다 ★',
       args.get('bev_resolution') == '0.02'
       and args.get('bev_x_max') == '1.20'
-      and args.get('bev_y_max') == '0.50',
+      and args.get('bev_y_max') == '0.70',
       '(%s m/px, x~%s, y±%s)' % (args.get('bev_resolution'),
                                  args.get('bev_x_max'), args.get('bev_y_max')))
 px = ((float(args['bev_x_max']) - float(args['bev_x_min']))
@@ -256,6 +256,12 @@ px = ((float(args['bev_x_max']) - float(args['bev_x_min']))
       * (float(args['bev_y_max']) - float(args['bev_y_min']))
       / float(args['bev_resolution']))
 check('  BEV 픽셀 수가 5000 이하', px <= 5000, '(%.0f px)' % px)
+# 고깔을 피해 max_offset_m 만큼 붙었을 때도 반대편 흰선이 격자 안에
+# 남아야 한다. 흰선을 넘으면 실격이라, 회피하는 그 순간 못 보면 안 된다.
+far_wall = float(args['track_half_m']) + float(args['max_offset_m'])
+check('회피로 붙었을 때도 반대편 흰선이 격자 안에 있다 ★',
+      float(args['bev_y_max']) >= far_wall,
+      '(먼 벽 %.2f m <= y_max %.2f m)' % (far_wall, float(args['bev_y_max'])))
 # 높이 보정은 실차 yaml 그대로 0. 피치는 우리 차에서 실측한 3.0 이다
 # (0/6/12.5 비교). 실차 yaml 의 0 과 다른 유일한 값이라 여기 고정해둔다.
 check('피치가 실측값 3.0 으로 고정돼 있다 ★',

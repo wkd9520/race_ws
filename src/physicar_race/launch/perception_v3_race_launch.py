@@ -111,16 +111,22 @@ def generate_launch_description():
         # BEV 픽셀 수에 거의 비례한다(연결요소마다 픽셀 BFS 를 돈다).
         #
         #   실차 yaml  0.01 m/px, x 0.1~2.0, y ±0.75  ->  150 x 190 = 28,500
-        #   지금       0.02 m/px, x 0.2~1.2, y ±0.50  ->   50 x  50 =  2,500
+        #   지금       0.02 m/px, x 0.2~1.2, y ±0.70  ->   70 x  50 =  3,500
         #
-        # 약 1/11 이다. 잃는 것은 2 cm 양자화뿐이고, 트랙 폭 0.70 m 와
-        # 고깔 0.10 m 를 보는 데는 충분하다. 거리도 1.2 m 면 넉넉하다 --
+        # 약 1/8 이다. 잃는 것은 2 cm 양자화뿐이고, 트랙 폭 0.74 m 와
+        # 고깔 0.10 m 를 보는 데 충분하다. 거리도 1.2 m 면 넉넉하다 --
         # 전방주시점이 최대 1.08 m 이고, 그보다 먼 곳은 카메라가 낮아서
         # 어차피 뭉갠다.
+        #
+        # y 를 ±0.50 이 아니라 ±0.70 으로 둔 이유: track_half_m 0.37 에
+        # max_offset_m 0.30 을 더하면 0.67 이다. 고깔을 피해 한쪽으로
+        # 붙는 그 순간 반대편 흰선이 격자 밖으로 나가면, 넘으면 실격인
+        # 선을 바로 그때 못 보게 된다. 0.70 이면 회피 중에도 양쪽이
+        # 남는다. 픽셀 1000개 더 쓰는 값으로는 싸다.
         DeclareLaunchArgument('bev_x_min', default_value='0.20'),
         DeclareLaunchArgument('bev_x_max', default_value='1.20'),
-        DeclareLaunchArgument('bev_y_min', default_value='-0.50'),
-        DeclareLaunchArgument('bev_y_max', default_value='0.50'),
+        DeclareLaunchArgument('bev_y_min', default_value='-0.70'),
+        DeclareLaunchArgument('bev_y_max', default_value='0.70'),
         DeclareLaunchArgument('bev_resolution', default_value='0.02'),
 
         # --- 투영 보정 ---
