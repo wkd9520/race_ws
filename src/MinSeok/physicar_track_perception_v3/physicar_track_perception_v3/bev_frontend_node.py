@@ -232,7 +232,7 @@ class V3Node(Node):
         for name,color in (('avoidance.path_color_bgr',self.avoidance_path_color),('avoidance.obstacle_color_bgr',self.avoidance_obstacle_color)):
             if len(color) != 3 or any(value < 0 or value > 255 for value in color):
                 raise ValueError(f'{name} must contain three bytes')
-        self.bridge=CvBridge(); self.pending=[]; self.pending_replaced=0; self.tfbuf=tf2_ros.Buffer(cache_time=Duration(seconds=10)); tf2_ros.TransformListener(self.tfbuf,self,spin_thread=True)
+        self.frontend=None; self.stage={}; self.bridge=CvBridge(); self.pending=[]; self.pending_replaced=0; self.tfbuf=tf2_ros.Buffer(cache_time=Duration(seconds=10)); tf2_ros.TransformListener(self.tfbuf,self,spin_thread=True)
         self.frame_count = 0
         self._last_stats_log = 0.0
         self.stats = {k: 0 for k in ('images_received','immediate_tf_success','pending_enqueued','pending_retry_attempts','pending_eventual_success','pending_timeout','pending_replaced','frames_processed','bev_published','orange_processed','path_overlay_published','duplicate_processed','lidar_scans_received','lidar_no_pair','lidar_tf_success','lidar_tf_failure','lidar_tf_wait','lidar_pending_replaced','lidar_overlay_published','path_lidar_overlay_published','avoidance_published','avoidance_active','multi_track_published')}
@@ -1460,18 +1460,41 @@ class V3Node(Node):
                 break
         self.retry_lidar()
     def process(self,msg,tfmsg):
+        t_start=time.perf_counter()
         stamp=(msg.header.stamp.sec,msg.header.stamp.nanosec)
         if stamp in self.processed_stamps:
             self.stats['duplicate_processed'] += 1
             return
         self.processed_stamps.add(stamp)
         self.stats['frames_processed'] += 1
-        p=lambda k:self.get_parameter(k).value; tf=apply_projection_corrections(self.matrix(tfmsg),camera_height_correction_z=float(p('sim_geometry.camera_height_correction_z')),pitch_offset_deg=float(p('projection.pitch_offset_deg')),pitch_correction_frame='pan_local_y'); out=BevFrontend(self.camera,MetricGroundProjector(self.camera,self.grid,tf,float(p('ground_z')))).process(self.bridge.imgmsg_to_cv2(msg,'bgr8'))
+        p=lambda k:self.get_parameter(k).value; tf=apply_projection_corrections(self.matrix(tfmsg),camera_height_correction_z=float(p('sim_geometry.camera_height_correction_z')),pitch_offset_deg=float(p('projection.pitch_offset_deg')),pitch_correction_frame='pan_local_y')
+        # 프레임마다 BevFrontend 를 새로 만들고 있었다. 그 생성자는
+        # cv2.initUndistortRectifyMap 으로 480x360 왜곡보정 맵을 통째로
+        # 계산하는데, frontend.py:28 에 민석이가 직접 써놨듯이 그 맵은
+        # **자세와 무관**하다. 그래서 update_projector() 가 있고 v2 노드는
+        # 그걸 쓴다(v2/bev_frontend_node.py:590). v3 만 빠져 있었다.
+        # 게다가 실차 yaml 의 D 는 전부 0이라 그 맵은 항등사상이다 --
+        # 아무것도 안 바꾸는 맵을 매 프레임 다시 만들고 있었다.
+        #
+        # 자세를 타는 것은 BEV 소스 맵뿐이고, 그건 update_projector 가
+        # 그대로 다시 만든다. 결과는 완전히 같다.
+        t_a=time.perf_counter()
+        projector=MetricGroundProjector(self.camera,self.grid,tf,float(p('ground_z')))
+        if self.frontend is None:
+            self.frontend=BevFrontend(self.camera,projector)
+        else:
+            self.frontend.update_projector(projector)
+        t_b=time.perf_counter()
+        out=self.frontend.process(self.bridge.imgmsg_to_cv2(msg,'bgr8'))
+        t_c=time.perf_counter()
         # Publish the front-end image before the intentionally heavier
         # component graph extraction, so BEV diagnostics remain observable.
         self.bev_pub.publish(self.bridge.cv2_to_imgmsg(out.bev,'bgr8'))
         self.stats['bev_published'] += 1
         seg=self.seg.process(out.bev,out.validity_mask>0)
+        t_d=time.perf_counter()
+        self.stage.update(map=t_b-t_a, remap=t_c-t_b, seg=t_d-t_c,
+                          head=t_d-t_start)
         items=[]
         for obs in seg.component_frame.observations:
             if obs.candidate is not None:
@@ -1756,6 +1779,16 @@ class V3Node(Node):
             centers = [(item.component_id, round(item.support, 3), tuple(np.round(item.polyline.points[0], 3)), tuple(np.round(item.polyline.points[-1], 3))) for item in items if item.color == 'ORANGE']
             usable = len(centers)
             self.get_logger().info('V3 WHITE shadow total=%d labels=%s lateral=%s left=%s right=%s reason=%s' % (len(whites), dict(white_shadow.labels) if white_shadow is not None else {}, white_shadow.diagnostics if white_shadow is not None else {}, bool(white_shadow and white_shadow.left), bool(white_shadow and white_shadow.right), white_shadow.reason if white_shadow is not None else 'NO_SHADOW'))
+            # py-spy 대신 노드가 직접 찍는다. 178 ms 가 어디로 가는지
+            # 이름으로 보이게 하는 게 목적이다.
+            st = self.stage
+            self.get_logger().info(
+                'V3 timing total=%.1fms | map=%.1f remap=%.1f seg=%.1f '
+                'head=%.1f tail=%.1f'
+                % (st.get('total',0)*1e3, st.get('map',0)*1e3,
+                   st.get('remap',0)*1e3, st.get('seg',0)*1e3,
+                   st.get('head',0)*1e3,
+                   (st.get('total',0)-st.get('head',0))*1e3))
             diag = self.last_lidar_diagnostic or {}
             self.get_logger().info('V3 LiDAR image=%.9f scan=%s delta=%s frame=%s beams=%d valid=%d transformed=%d in_bounds=%d dropped_tf=%d tf_success=%s tf_error=%s overlays=%d no_pair=%d tf_wait=%d tf_fail=%d pending=%d replaced=%d' % (diag.get('image_stamp', 0.0), 'none' if diag.get('scan_stamp') is None else '%.9f' % diag['scan_stamp'], 'none' if diag.get('delta') is None else '%.6f' % diag['delta'], diag.get('scan_frame'), diag.get('total_beams', 0), diag.get('valid_ranges', 0), diag.get('transformed_points', 0), diag.get('in_bounds_points', 0), diag.get('dropped_tf_points', 0), diag.get('tf_success', False), diag.get('tf_error'), self.stats['lidar_overlay_published'], self.stats['lidar_no_pair'], self.stats['lidar_tf_wait'], self.stats['lidar_tf_failure'], len(self.lidar_pending), self.stats['lidar_pending_replaced']))
             self.get_logger().info('V3 stats images=%d immediate=%d pending=%d retry=%d eventual=%d timeout=%d replaced=%d processed=%d bev=%d overlays=%d orange=%d usable=%d stitched=%d bridges=%d current_start=%s final_start=%s orange_proximity=%s history_used=%s pending_now=%d' % (self.stats['images_received'], self.stats['immediate_tf_success'], self.stats['pending_enqueued'], self.stats['pending_retry_attempts'], self.stats['pending_eventual_success'], self.stats['pending_timeout'], self.stats['pending_replaced'], self.stats['frames_processed'], self.stats['bev_published'], self.stats['path_overlay_published'], self.stats['orange_processed'], usable, len(result.stitched_component_ids), result.bridged_gap_count, 'none' if current_start_dist is None else round(current_start_dist, 4), 'none' if final_start_dist is None else round(final_start_dist, 4), proximity_reason, bool(recovery is not None and recovery.used), len(self.pending)))
@@ -1788,6 +1821,7 @@ class V3Node(Node):
                 and self.last_lidar_diagnostic.get('tf_success', False)):
             self.publish_lidar_overlay(
                 *lidar_overlays, msg.header.stamp)
+        self.stage['total']=time.perf_counter()-t_start
         self.white_pub.publish(self.bridge.cv2_to_imgmsg(seg.white_mask,'mono8')); self.orange_pub.publish(self.bridge.cv2_to_imgmsg(seg.orange_mask,'mono8')); self.role_pub.publish(self.bridge.cv2_to_imgmsg(role,'bgr8')); self.path_pub.publish(self.bridge.cv2_to_imgmsg(path,'bgr8')); self.stats['path_overlay_published'] += 1
 
     def draw_roles(self, bev, items):
