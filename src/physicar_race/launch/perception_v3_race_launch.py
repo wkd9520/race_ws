@@ -109,10 +109,13 @@ def generate_launch_description():
         DeclareLaunchArgument('bev_y_max', default_value='0.75'),
         DeclareLaunchArgument('bev_resolution', default_value='0.01'),
 
-        # --- 투영 보정: 눈으로 보며 맞추는 값 ---
-        # 실차 yaml 은 둘 다 0 이다. 주석에 이유가 적혀 있다 --
-        # -0.018 은 Gazebo 전용 보정이고, 피치는 실물 URDF/TF 를 그대로 믿는다.
-        DeclareLaunchArgument('pitch_offset_deg', default_value='0.0'),
+        # --- 투영 보정 ---
+        # 실차 yaml 은 둘 다 0 이다("실물 URDF/TF 를 그대로 믿는다").
+        # 그런데 우리 차는 실측 결과 +3.0 이 맞았다 -- 0 / 6 / 12.5 를
+        # 비교해서 3.0 에서 BEV 가 가장 곧게 나왔다. 서보가 명령(-30도)보다
+        # 약간 아래로 처져 있다는 뜻이다.
+        # 카메라를 다시 장착하거나 서보를 바꾸면 재측정할 것.
+        DeclareLaunchArgument('pitch_offset_deg', default_value='3.0'),
         DeclareLaunchArgument('camera_height_correction_z',
                               default_value='0.0'),
 

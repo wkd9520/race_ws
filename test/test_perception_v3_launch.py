@@ -246,11 +246,14 @@ check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
 check('격자 기본값이 실차 yaml 과 같다',
       args.get('bev_x_min') == '0.10' and args.get('bev_x_max') == '2.00'
       and args.get('bev_y_min') == '-0.75' and args.get('bev_y_max') == '0.75')
-check('투영 보정 기본값이 실차 yaml 과 같다 (둘 다 0)',
-      args.get('pitch_offset_deg') == '0.0'
-      and args.get('camera_height_correction_z') == '0.0',
-      '(pitch %s, height %s)' % (args.get('pitch_offset_deg'),
-                                 args.get('camera_height_correction_z')))
+# 높이 보정은 실차 yaml 그대로 0. 피치는 우리 차에서 실측한 3.0 이다
+# (0/6/12.5 비교). 실차 yaml 의 0 과 다른 유일한 값이라 여기 고정해둔다.
+check('피치가 실측값 3.0 으로 고정돼 있다 ★',
+      args.get('pitch_offset_deg') == '3.0',
+      '(%s)' % args.get('pitch_offset_deg'))
+check('높이 보정은 실차 yaml 대로 0',
+      args.get('camera_height_correction_z') == '0.0',
+      '(%s)' % args.get('camera_height_correction_z'))
 
 
 print('\n[3b] LiDAR 회피를 끄는가 ★ (우리는 카메라로 고깔을 본다)')
