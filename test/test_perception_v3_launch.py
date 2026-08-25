@@ -427,6 +427,38 @@ for key in ('v_max', 'a_lat_max', 'steer_sign', 'ld_k',
     check(key, key in args, '(기본 %s)' % args.get(key))
 
 
+
+print('\n[9] 리매핑 이름이 노드가 실제로 쓰는 이름과 맞는가 ★')
+# 이 실수는 두 번 물렸다.
+#   centroid_follow_node -- image_raw 를 remap 안 해서 차가 안 움직였다
+#   traffic_light_node   -- 노드는 'image_raw', 런치는 '/camera/image_raw'
+#                           를 remap 해서 프레임을 0장 받았다
+#
+# 짝이 안 맞으면 **오류가 안 난다.** 노드는 있지도 않은 토픽을 조용히
+# 기다리고, 우리는 엉뚱한 곳(HSV, 임계값)을 파게 된다. 그래서 여기서
+# 소스를 열어 그 이름을 실제로 쓰는지 확인한다.
+PKG_DIR = os.path.join(HERE, os.pardir, 'src', 'physicar_race',
+                       'physicar_race')
+checked = 0
+for node in nodes:
+    if node.kw.get('package') != 'physicar_race':
+        continue
+    source_path = os.path.join(PKG_DIR, '%s.py' % node.kw.get('executable'))
+    if not os.path.exists(source_path):
+        check('%s 의 소스 파일이 있다' % node.kw.get('executable'), False)
+        continue
+    node_source = open(source_path, encoding='utf-8').read()
+    for source_name, _ in (node.kw.get('remappings') or []):
+        checked += 1
+        check("%s 가 '%s' 를 실제로 쓴다"
+              % (node.kw.get('name'), source_name),
+              "'%s'" % source_name in node_source,
+              '' if "'%s'" % source_name in node_source
+              else '(짝이 안 맞으면 조용히 0장 받는다)')
+check('리매핑을 실제로 검사했다 (테스트가 헛돌지 않는다)', checked >= 1,
+      '(%d개)' % checked)
+
+
 print('\n' + '=' * 58)
 if FAILS:
     print('실패 %d건: %s' % (len(FAILS), ', '.join(FAILS)))

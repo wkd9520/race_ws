@@ -373,7 +373,11 @@ def generate_launch_description():
             'debug_probe': _b('traffic_probe'),
             'publish_debug': _b('debug_view'),
         }],
-        remappings=[('/camera/image_raw', LaunchConfiguration('camera_topic'))],
+        # 노드가 구독하는 이름은 상대명 'image_raw' 다(traffic_light_node.py:146).
+        # 여기를 '/camera/image_raw' 로 적으면 짝이 안 맞아 **아무 일도 안 하고**,
+        # 노드는 있지도 않은 /image_raw 를 기다리며 프레임을 0장 받는다.
+        # 오류가 안 나서 HSV 를 아무리 만져도 안 잡히는 것처럼 보인다.
+        remappings=[('image_raw', LaunchConfiguration('camera_topic'))],
     )
 
     # 그리기만 하는 노드다. 안 볼 거면 띄울 이유가 없다.
