@@ -139,11 +139,34 @@ def generate_launch_description():
         # TF 가 따라올 때까지 기다린다. 그게 지연의 대부분이다
         # (평균 0.23 중 0.14).
         #
-        # 카메라가 주행 중 움직이면 이걸 켜면 안 된다 -- 100 ms 전 자세로
-        # BEV 를 만들면 지면이 통째로 틀어진다. 우리 차는 주행 중 카메라가
-        # 고정이라(틸트 -30도, 팬 0도) 최근 TF 와 정확한 시각의 TF 가
-        # 같고, 잃는 것이 없다.
-        DeclareLaunchArgument('tf_allow_latest', default_value='false'),
+        # 실측이 원인을 짚어줬다. tf2 가 하는 말:
+        #
+        #   Lookup would require extrapolation into the future.
+        #   Requested time 1787695793.484039
+        #   but the latest data is at 1787695793.480519      차이 3.5 ms
+        #
+        # TF 가 늦은 게 아니다. 96 Hz(10 ms 간격)로 잘 오는데, 이미지
+        # 스탬프가 가장 최신 TF 보다 **몇 밀리초 앞**에 떨어진다. tf2 는
+        # 미래로 외삽하지 않으므로 거부하고, 다음 샘플까지 프레임을
+        # 붙잡는다. 어긋나는 폭은 1~18 ms 다.
+        #
+        # 켜면 그럴 때 가장 최근 TF 를 쓴다. 오차가 0 인 이유:
+        # base_footprint -> camera 는 카메라를 고정해두면 시간이 지나도
+        # 안 변하는 값이다. 18 ms 전 값이든 지금 값이든 같다.
+        #
+        # 실측 (immediate / images):
+        #     끄면   673 / 1836 = 37%   timeout 1
+        #     켜면   268 /  301 = 89%   timeout 0
+        #
+        # **주행 중 카메라를 움직이는 구성이면 반드시 꺼야 한다.**
+        # start_sequence_node 가 출발 후 팬 0도 틸트 고정으로 잡아두는
+        # 것이 이 값의 전제다. 카메라가 도는 동안(TURNING)에는 race/go 가
+        # 아직 false 라 주행하지 않으므로 문제되지 않는다.
+        #
+        # 앞서 한 번 켰다가 6.0 Hz 로 나빠져 접었는데, 그건
+        # use_sim_time=true 로 시계가 깨진 상태에서 잰 값이었다.
+        # 두 문제가 겹쳐 있었고 하나씩 풀어야 했다.
+        DeclareLaunchArgument('tf_allow_latest', default_value='true'),
 
         # --- 경로 이력 (odom 의존) ---
         # 최근 중앙 경로를 odom 좌표계에 저장해뒀다가, 검출이 순간적으로

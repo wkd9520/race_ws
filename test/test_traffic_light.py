@@ -350,6 +350,22 @@ check('skip_light 가 start_sequence 로 간다',
 check('  skip_light 면 바로 주행 자세로 간다',
       "DRIVING if bool(p('skip_light').value) else AIMING" in start_src)
 
+
+
+print('\n[7] 최근 TF 허용은 카메라 고정이 전제다 ★')
+# tf_allow_latest 는 base_footprint -> camera 가 시간에 안 변한다는
+# 가정 위에 서 있다. start_sequence_node 가 주행 중 그 자세를 잡아두는
+# 것이 그 가정의 근거다. 둘 중 하나만 바뀌면 BEV 가 조용히 틀어진다.
+check('tf_allow_latest 가 기본으로 켜져 있다',
+      "DeclareLaunchArgument('tf_allow_latest', default_value='true')"
+      in launch_src)
+check('  주행 중 카메라를 고정으로 잡는 노드가 있다 ★',
+      'drive_pan_degrees' in start_src and 'drive_tilt_degrees' in start_src)
+check('  주행 단계에서 매 주기 그 자세를 계속 발행한다 ★',
+      'target = self.aim if self.phase == AIMING else self.drive' in start_src)
+check('  카메라가 도는 동안에는 주행하지 않는다 (race/go=False)',
+      "self.pub_go.publish(Bool(data=self.phase == DRIVING))" in start_src)
+
 print('\n' + '=' * 58)
 if FAILS:
     print('실패 %d건: %s' % (len(FAILS), ', '.join(FAILS)))
