@@ -186,6 +186,25 @@ def generate_launch_description():
 
         # --- 초록 고깔 회피 ---
         DeclareLaunchArgument('avoid_enabled', default_value='true'),
+
+        # --- 출발 신호등 ---
+        # 코스 규정: 정지선 앞 신호등에 초록 원이 들어와야 출발할 수 있다.
+        # 이 스위치 하나가 신호등 노드와 follow 노드의 대기를 **같이**
+        # 켜고 끈다. 따로 두면 언젠가 한쪽만 켜지고, 그러면 신호등 노드가
+        # 없는데 차가 영영 안 움직이거나(대기만 켬) 빨간불에 출발한다
+        # (노드만 켬). 둘 다 대회에서 끝장이라 하나로 묶는다.
+        DeclareLaunchArgument('traffic_light', default_value='true'),
+        # 신호등은 화면 위쪽에 있다. 출발선에 세워놓고 debug_view 로 보면서 맞춘다.
+        DeclareLaunchArgument('traffic_roi_bottom', default_value='0.55'),
+        DeclareLaunchArgument('traffic_green_h_min', default_value='40'),
+        DeclareLaunchArgument('traffic_green_h_max', default_value='90'),
+        DeclareLaunchArgument('traffic_sat_min', default_value='120'),
+        DeclareLaunchArgument('traffic_val_min', default_value='120'),
+        DeclareLaunchArgument('traffic_min_blob_px', default_value='60'),
+        # 초록 고깔(HSV 40~85)이 초록불로 읽히는 것을 막는 모양 검사.
+        DeclareLaunchArgument('traffic_require_circle', default_value='true'),
+        # 검출이 안 되면 켠다. 화면의 실측 H/S/V 를 로그로 뽑아준다.
+        DeclareLaunchArgument('traffic_probe', default_value='false'),
         DeclareLaunchArgument('green_h_min', default_value='40'),
         DeclareLaunchArgument('green_h_max', default_value='85'),
         DeclareLaunchArgument('green_s_min', default_value='80'),
@@ -290,6 +309,27 @@ def generate_launch_description():
         }],
     )
 
+    # 출발 신호등. 지금 프레임에 무엇이 보이는지만 보고한다(무상태).
+    # '초록을 봤으니 출발'이라는 래치는 follow 노드가 건다 -- 인지와
+    # 상태를 갈라놔야 어느 쪽이 틀렸는지 알 수 있다.
+    traffic = Node(
+        package=PKG, executable='traffic_light_node', name='traffic_light_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('traffic_light')),
+        parameters=[{
+            'roi_bottom_frac': _f('traffic_roi_bottom'),
+            'green_h_min': _i('traffic_green_h_min'),
+            'green_h_max': _i('traffic_green_h_max'),
+            'sat_min': _i('traffic_sat_min'),
+            'val_min': _i('traffic_val_min'),
+            'min_blob_px': _i('traffic_min_blob_px'),
+            'require_circle': _b('traffic_require_circle'),
+            'debug_probe': _b('traffic_probe'),
+            'publish_debug': _b('debug_view'),
+        }],
+        remappings=[('/camera/image_raw', LaunchConfiguration('camera_topic'))],
+    )
+
     # 그리기만 하는 노드다. 안 볼 거면 띄울 이유가 없다.
     overlay = Node(
         package=PKG, executable='race_overlay_node', name='race_overlay_node',
@@ -316,6 +356,8 @@ def generate_launch_description():
             'a_lat_max': _f('a_lat_max'),
             'k_vis': _f('k_vis'),
             'avoid_enabled': _b('avoid_enabled'),
+            # 신호등 노드와 반드시 같은 값. 위 traffic_light 주석 참고.
+            'wait_for_green': _b('traffic_light'),
             'cone_margin_m': _f('cone_margin_m'),
             'wall_margin_m': _f('wall_margin_m'),
             'max_offset_m': _f('max_offset_m'),
@@ -337,4 +379,4 @@ def generate_launch_description():
 
     return LaunchDescription(
         args + [tilt_hold, tf_broadcaster, perception_v3,
-                cones, follow, overlay, rqt])
+                cones, traffic, follow, overlay, rqt])

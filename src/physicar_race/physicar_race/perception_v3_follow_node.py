@@ -26,7 +26,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped  # noqa: F401  (Path.poses 항목 타입 문서화용)
 from nav_msgs.msg import Path
 from rclpy.node import Node
-from std_msgs.msg import Bool, Float32MultiArray, Float64
+from std_msgs.msg import Bool, Float32MultiArray, Float64, String
 
 WHEELBASE = 0.18            # m -- 드라이버 계층과 같은 값
 MAX_STEER = math.radians(20.0)
@@ -47,6 +47,17 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('ld_max_m', 1.30)
         self.declare_parameter('ld_k', 0.90)
         self.declare_parameter('steer_sign', 1.0)
+
+        # 출발 신호등. 초록 원을 볼 때까지 안 움직인다.
+        #
+        # 래치다 -- 한 번 초록을 보면 그 뒤로는 신호등을 아예 안 본다.
+        # 코스 규정상 신호등은 출발 시점에만 있고, 주행 중에 초록이
+        # 가려지거나 시야를 벗어났다고 차를 세우면 그게 더 위험하다.
+        #
+        # 기본값이 False 인 이유: 신호등 노드가 안 떠 있는데 True 면
+        # 차가 영원히 안 움직인다. 런치가 traffic_light 인자와 묶어서
+        # 켠다 -- 둘이 항상 같이 켜지고 같이 꺼진다.
+        self.declare_parameter('wait_for_green', False)
 
         # 속도: 횡가속 한계(v <= sqrt(a_lat_max * R))와 보이는 거리로 정한다.
         self.declare_parameter('v_max', 1.20)
@@ -95,6 +106,8 @@ class PerceptionV3FollowNode(Node):
         self.ld_max_m = float(p('ld_max_m').value)
         self.ld_k = float(p('ld_k').value)
         self.steer_sign = float(p('steer_sign').value)
+        self.wait_for_green = bool(p('wait_for_green').value)
+        self._green_seen = not self.wait_for_green
         self.v_max = float(p('v_max').value)
         self.v_min = float(p('v_min').value)
         self.a_lat_max = float(p('a_lat_max').value)
@@ -133,6 +146,8 @@ class PerceptionV3FollowNode(Node):
         self.create_subscription(Bool, '/perception_v3/debug/path_valid',
                                  self.on_valid, 10)
         self.create_subscription(Float32MultiArray, '/cones', self.on_cones, 10)
+        self.create_subscription(String, 'traffic/light_state',
+                                 self.on_light, 10)
         self.pub_speed = self.create_publisher(Float64, '/speed', 10)
         self.pub_steer = self.create_publisher(Float64, '/steering', 10)
         # 오버레이 노드가 "우리가 어디로 가려는지"를 그릴 수 있게 결정을 흘린다.
@@ -287,6 +302,16 @@ class PerceptionV3FollowNode(Node):
 
     def tick(self):
         now = time.time()
+
+        # 신호등 게이트. 경로가 잘 보이든 말든 초록 전에는 안 나간다.
+        # 조향도 0 으로 둔다 -- 정지 중에 바퀴를 꺾어두면 출발 첫 순간에
+        # 엉뚱한 방향으로 튄다.
+        if not self._green_seen:
+            self._publish(0.0, 0.0)
+            self.get_logger().info('신호 대기 중 (초록 원을 기다린다)',
+                                   throttle_duration_sec=2.0)
+            return
+
         fresh = (now - self._last_path_time) < self.input_timeout
         usable = (fresh and self._path_valid
                  and len(self._path_points) >= self.min_path_points)
@@ -335,6 +360,13 @@ class PerceptionV3FollowNode(Node):
 
         self._publish(0.0, 0.0)
         self.get_logger().warn('경로 없음 - 정지', throttle_duration_sec=1.0)
+
+    def on_light(self, msg):
+        """초록을 한 번 보면 래치를 걸고, 그 뒤로는 신호등을 안 본다."""
+        if self._green_seen or msg.data != 'GREEN':
+            return
+        self._green_seen = True
+        self.get_logger().info('초록 신호 확인 -- 출발한다')
 
     def _publish(self, speed, steer):
         if speed == 0.0:
