@@ -245,8 +245,12 @@ check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
 
 # 라즈베리파이 5 가 카메라를 못 따라가서 줄였다. 인지 비용은 BEV 픽셀
 # 수에 거의 비례한다(연결요소마다 픽셀 BFS). 28,500 -> 2,500 px.
-check('격자가 라즈베리파이용으로 줄어 있다 ★',
-      args.get('bev_resolution') == '0.02'
+# 해상도는 0.01 로 못 박는다. 0.02 로 올리면 흰선(2~3 cm)이 BEV 에서
+# 1 픽셀이 되고, 마스킹이 투영 *뒤에* 돌기 때문에(bev_frontend_node.py:1452)
+# 보간에서 아스팔트와 섞여 임계값을 못 넘는다 -- 선이 통째로 사라진다.
+# 실차에서 조향이 완전히 죽었다. 줄이는 건 범위로만 한다.
+check('해상도는 0.01 이고 범위만 줄었다 ★',
+      args.get('bev_resolution') == '0.01'
       and args.get('bev_x_max') == '1.20'
       and args.get('bev_y_max') == '0.70',
       '(%s m/px, x~%s, y±%s)' % (args.get('bev_resolution'),
@@ -255,7 +259,8 @@ px = ((float(args['bev_x_max']) - float(args['bev_x_min']))
       / float(args['bev_resolution'])
       * (float(args['bev_y_max']) - float(args['bev_y_min']))
       / float(args['bev_resolution']))
-check('  BEV 픽셀 수가 5000 이하', px <= 5000, '(%.0f px)' % px)
+check('  BEV 픽셀 수가 실차 yaml(28,500)의 절반 이하', px <= 14500,
+      '(%.0f px)' % px)
 # 고깔을 피해 max_offset_m 만큼 붙었을 때도 반대편 흰선이 격자 안에
 # 남아야 한다. 흰선을 넘으면 실격이라, 회피하는 그 순간 못 보면 안 된다.
 far_wall = float(args['track_half_m']) + float(args['max_offset_m'])

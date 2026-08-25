@@ -107,27 +107,31 @@ def generate_launch_description():
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
         # --- BEV 격자: 세 노드가 이 값을 같이 쓴다 ---
-        # 라즈베리파이 5 에서 인지가 카메라를 못 따라갔다. 인지 비용은
-        # BEV 픽셀 수에 거의 비례한다(연결요소마다 픽셀 BFS 를 돈다).
+        # 라즈베리파이 5 에서 인지가 카메라를 못 따라가서 줄였다. 인지
+        # 비용은 BEV 픽셀 수에 거의 비례한다(연결요소마다 픽셀 BFS).
         #
-        #   실차 yaml  0.01 m/px, x 0.1~2.0, y ±0.75  ->  150 x 190 = 28,500
-        #   지금       0.02 m/px, x 0.2~1.2, y ±0.70  ->   70 x  50 =  3,500
+        #   실차 yaml  0.01, x 0.1~2.0, y ±0.75 -> 150 x 190 = 28,500
+        #   지금       0.01, x 0.2~1.2, y ±0.70 -> 100 x 140 = 14,000
         #
-        # 약 1/8 이다. 잃는 것은 2 cm 양자화뿐이고, 트랙 폭 0.74 m 와
-        # 고깔 0.10 m 를 보는 데 충분하다. 거리도 1.2 m 면 넉넉하다 --
-        # 전방주시점이 최대 1.08 m 이고, 그보다 먼 곳은 카메라가 낮아서
-        # 어차피 뭉갠다.
+        # 절반이다. **범위만 줄이고 해상도(0.01)는 손대지 않는다.**
         #
-        # y 를 ±0.50 이 아니라 ±0.70 으로 둔 이유: track_half_m 0.37 에
-        # max_offset_m 0.30 을 더하면 0.67 이다. 고깔을 피해 한쪽으로
-        # 붙는 그 순간 반대편 흰선이 격자 밖으로 나가면, 넘으면 실격인
-        # 선을 바로 그때 못 보게 된다. 0.70 이면 회피 중에도 양쪽이
-        # 남는다. 픽셀 1000개 더 쓰는 값으로는 싸다.
+        # 0.02 로 올렸다가 조향이 통째로 죽었다. 이유는 마스킹 순서다 --
+        # bev_frontend_node.py:1452 에서 색 마스킹이 BEV 를 만든 *뒤에*
+        # 돈다. 흰선 폭이 2~3 cm 라 0.02 m/px 면 BEV 에서 1~1.5 픽셀이고,
+        # 투영 보간에서 아스팔트와 섞여 흰색 임계값을 못 넘는다. 선이
+        # 사라지니 경로도 조향도 없다. los_drive_node 때 똑같이 물렸던
+        # 함정이다(939 -> 3117 px). 해상도는 검출 한계이지 표현 정밀도가
+        # 아니다. 다시 올리지 말 것.
+        #
+        # 거리 1.2 m 는 넉넉하다 -- 전방주시점이 최대 1.08 m 다.
+        # y ±0.70 인 이유: track_half_m 0.37 + max_offset_m 0.30 = 0.67.
+        # 고깔을 피해 붙는 순간 반대편 흰선(넘으면 실격)이 격자 밖으로
+        # 나가면 안 된다.
         DeclareLaunchArgument('bev_x_min', default_value='0.20'),
         DeclareLaunchArgument('bev_x_max', default_value='1.20'),
         DeclareLaunchArgument('bev_y_min', default_value='-0.70'),
         DeclareLaunchArgument('bev_y_max', default_value='0.70'),
-        DeclareLaunchArgument('bev_resolution', default_value='0.02'),
+        DeclareLaunchArgument('bev_resolution', default_value='0.01'),
 
         # --- 투영 보정 ---
         # 실차 yaml 은 둘 다 0 이다("실물 URDF/TF 를 그대로 믿는다").
