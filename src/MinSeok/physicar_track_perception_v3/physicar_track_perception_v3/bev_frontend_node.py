@@ -6,7 +6,8 @@ import time
 import numpy as np, cv2, rclpy
 from rclpy.node import Node
 from rclpy.duration import Duration
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (qos_profile_sensor_data, QoSProfile,
+                       ReliabilityPolicy, HistoryPolicy)
 from rclpy.time import Time
 from sensor_msgs.msg import Image, JointState, LaserScan
 from nav_msgs.msg import Path
@@ -57,6 +58,27 @@ from .control_integration import (
 from .lidar_bev import (expand_bev_canvas, filter_bev_bounds,
                         scan_to_lidar_points, transform_matrix,
                         transform_points)
+
+# 카메라는 항상 **가장 최신 프레임만** 본다.
+#
+# qos_profile_sensor_data 는 큐 깊이가 5다. 카메라가 30 Hz 로 밀어넣는데
+# 인지가 15 Hz 로 소화하면 큐에 다섯 장이 밀리고, 그러면 인지가 보는 건
+# 5/15 = 333 ms 전의 세상이다. 1.2 m/s 에서 40 cm 다. 차는 이미 지나간
+# 자리를 기준으로 조향한다 -- 코너에서 늘 늦게 꺾고 직선에서 넘어섰다
+# 되돌아온다.
+#
+# 깊이를 1로 두면 밀린 프레임을 붙잡는 대신 버린다. 처리 속도는 그대로고
+# (CPU 가 내주는 만큼 나온다) 지연만 한 프레임으로 고정된다. 프레임을
+# 버리는 게 손해처럼 보이지만, 어차피 늦게 처리할 프레임이라 쓸모가 없다.
+#
+# BEST_EFFORT 는 원래대로 둔다. RELIABLE 로 올리면 재전송을 기다리느라
+# 오히려 밀린다.
+NEWEST_IMAGE_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
+
 
 class V3Node(Node):
     def __init__(self):
@@ -238,7 +260,7 @@ class V3Node(Node):
         self.last_active_lifecycle_diagnostic = {'reason':'NOT_PROCESSED'}
         self.last_low_vote_recovery_diagnostic = {'reason':'NOT_PROCESSED'}
         self.last_center_hybrid_diagnostic = {'reason':'NOT_PROCESSED'}
-        self.create_subscription(Image,'/camera/image_raw',self.image_cb,qos_profile_sensor_data); self.create_subscription(JointState,'/joint_states',self.joint_cb,qos_profile_sensor_data); self.create_subscription(LaserScan,str(p('lidar.scan_topic')),self.scan_cb,qos_profile_sensor_data); self.create_timer(float(p('tf_wait.timer_period')),self.retry)
+        self.create_subscription(Image,'/camera/image_raw',self.image_cb,NEWEST_IMAGE_QOS); self.create_subscription(JointState,'/joint_states',self.joint_cb,qos_profile_sensor_data); self.create_subscription(LaserScan,str(p('lidar.scan_topic')),self.scan_cb,qos_profile_sensor_data); self.create_timer(float(p('tf_wait.timer_period')),self.retry)
         self.bev_pub=self.create_publisher(Image,'/perception_v3/debug/bev',2); self.lidar_bev_pub=self.create_publisher(Image,'/perception_v3/debug/bev_lidar_overlay',2); self.path_lidar_pub=self.create_publisher(Image,'/perception_v3/debug/path_lidar_overlay',2); self.lidar_diag_pub=self.create_publisher(String,'/perception_v3/debug/lidar_diagnostics',10); self.white_pub=self.create_publisher(Image,'/perception_v3/debug/white_mask',2); self.orange_pub=self.create_publisher(Image,'/perception_v3/debug/orange_mask',2); self.role_pub=self.create_publisher(Image,'/perception_v3/debug/role_overlay',2); self.path_pub=self.create_publisher(Image,'/perception_v3/debug/path_overlay',2); self.valid_pub=self.create_publisher(Bool,'/perception_v3/debug/path_valid',10); self.source_pub=self.create_publisher(String,'/perception_v3/debug/path_source',10); self.geometry_pub=self.create_publisher(Path,'/perception_v3/path',10); self.avoidance_path_pub=self.create_publisher(Path,'/avoidance_v3/debug/path',10); self.avoidance_active_pub=self.create_publisher(Bool,'/avoidance_v3/debug/active',10); self.avoidance_obstacle_pub=self.create_publisher(PointStamped,'/avoidance_v3/debug/obstacle_point',10); self.avoidance_offset_pub=self.create_publisher(Float64,'/avoidance_v3/debug/offset',10); self.avoidance_diag_pub=self.create_publisher(String,'/avoidance_v3/debug/diagnostics',10); self.avoidance_overlay_pub=self.create_publisher(Image,'/avoidance_v3/debug/overlay',2)
         self.avoidance_components_pub=self.create_publisher(String,'/avoidance_v3/debug/components',10)
         self.avoidance_selected_pub=self.create_publisher(String,'/avoidance_v3/debug/selected_obstacle',10)
