@@ -7,11 +7,18 @@
 
     ros2 launch physicar_race perception_v3_race_launch.py
 
-같이 뜨는 것:
+디버그 시각화는 기본이 꺼져 있다. 켜려면:
 
-    rqt_image_view 로 /race/debug/path_overlay     open_rqt:=false 로 끔
+    debug_view:=true
 
-헤드리스 환경이면 open_rqt:=false 로 꺼야 한다.
+그러면 race_overlay_node(주행선 합성)와 cone_bev_node 의 고깔 화면이
+발행되고, 5초 뒤 rqt_image_view 가 /race/debug/path_overlay 를 띄운다.
+
+실차에서는 꺼두는 게 맞다 -- 이미지를 만들고 발행하는 CPU 가 아깝고
+헤드리스면 볼 수도 없다.
+
+    참고: MinSeok 님 노드는 디버그 이미지를 항상 발행한다(끄는 스위치가
+    없다). 그건 우리가 못 끈다 -- 그의 코드는 안 건드리기 때문.
 
 BEV 격자와 투영 보정은 launch 인자다. 눈으로 보며 맞출 값들이라 yaml 을
 고치지 않고 바로 바꿀 수 있게 뺐다. 세 노드가 같은 인자에서 받으므로
@@ -171,8 +178,13 @@ def generate_launch_description():
         DeclareLaunchArgument('max_offset_m', default_value='0.30'),
         DeclareLaunchArgument('track_half_m', default_value='0.37'),
 
-        # --- 디버그 화면 ---
-        DeclareLaunchArgument('open_rqt', default_value='true'),
+        # --- 디버그 시각화 ---
+        # 실차에서는 끈다. 오버레이 이미지를 만들고 발행하는 데 드는 CPU 가
+        # 아깝고, 헤드리스라 볼 수도 없다. 기본을 꺼둔 이유가 그것이다.
+        # 켜면 세 가지가 같이 켜진다:
+        #   race_overlay_node (주행선 합성), cone_bev_node 의 고깔 화면,
+        #   rqt_image_view
+        DeclareLaunchArgument('debug_view', default_value='false'),
         DeclareLaunchArgument('rqt_topic',
                               default_value='/race/debug/path_overlay'),
         DeclareLaunchArgument('rqt_delay', default_value='5.0'),
@@ -254,12 +266,15 @@ def generate_launch_description():
             'green_h_max': _i('green_h_max'),
             'green_s_min': _i('green_s_min'),
             'green_v_min': _i('green_v_min'),
+            'publish_debug': _b('debug_view'),
         }],
     )
 
+    # 그리기만 하는 노드다. 안 볼 거면 띄울 이유가 없다.
     overlay = Node(
         package=PKG, executable='race_overlay_node', name='race_overlay_node',
         output='screen',
+        condition=IfCondition(LaunchConfiguration('debug_view')),
         parameters=[{
             'bev_x_min': _f('bev_x_min'), 'bev_x_max': _f('bev_x_max'),
             'bev_y_min': _f('bev_y_min'), 'bev_y_max': _f('bev_y_max'),
@@ -296,7 +311,7 @@ def generate_launch_description():
             package='rqt_image_view', executable='rqt_image_view',
             name='rqt_image_view', output='screen',
             arguments=[LaunchConfiguration('rqt_topic')],
-            condition=IfCondition(LaunchConfiguration('open_rqt')),
+            condition=IfCondition(LaunchConfiguration('debug_view')),
         )],
     )
 

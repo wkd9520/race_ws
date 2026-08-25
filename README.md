@@ -75,7 +75,8 @@ bash scripts/preflight_runtime.sh
 ros2 launch physicar_race perception_v3_race_launch.py
 ```
 
-`rqt_image_view` 가 5초 뒤 같이 뜬다(`open_rqt:=false` 로 끔).
+디버그 시각화는 기본이 꺼져 있다. `debug_view:=true` 로 켜면
+오버레이 합성과 `rqt_image_view` 가 같이 뜬다.
 
 카메라 틸트는 이 launch 가 건드리지 않는다. V2 요구사항상 `-0.5236 rad`
 (-30도)여야 하지만, 시뮬레이터가 이미 잡고 있으면 둘이 동시에 보내 값이
@@ -94,7 +95,7 @@ ros2 topic pub -r 10 /camera/tilt std_msgs/msg/Float64 "{data: -0.5235987756}"
 | `avoid_enabled` | true | 고깔 회피 |
 | `green_h_min/max` | 40 / 85 | 초록 HSV (**추정치, 실측 필요**) |
 | `track_half_m` | 0.37 | 트랙 반폭 — 회피 안전 울타리 |
-| `open_rqt` | true | 헤드리스면 false |
+| `debug_view` | **false** | 오버레이·rqt. 실차는 꺼둔다 |
 
 빌드는 워크스페이스 루트에서:
 

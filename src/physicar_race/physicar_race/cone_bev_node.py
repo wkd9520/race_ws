@@ -59,6 +59,9 @@ class ConeBevNode(Node):
         self.declare_parameter('open_kernel', 3)
         self.declare_parameter('wall_row_band', 3)     # 흰선 탐색 시 위아래 여유 행
         self.declare_parameter('log_every', 30)
+        # 실차에서는 끈다. 디버그 이미지를 만들고 발행하는 데 드는
+        # CPU 가 아깝고, 아무도 안 볼 때가 많다.
+        self.declare_parameter('publish_debug', True)
 
         p = self.get_parameter
         self.x_min = float(p('bev_x_min').value)
@@ -87,7 +90,8 @@ class ConeBevNode(Node):
         self.create_subscription(Image, '/perception_v3/debug/bev',
                                  self.on_bev, 10)
         self.pub_cones = self.create_publisher(Float32MultiArray, '/cones', 10)
-        self.pub_dbg = self.create_publisher(Image, '/cones/debug_image', 1)
+        self.pub_dbg = (self.create_publisher(Image, '/cones/debug_image', 1)
+                        if bool(p('publish_debug').value) else None)
 
         self.get_logger().info('cone_bev_node 시작 (초록 고깔 -> 미터 좌표)')
 
@@ -203,7 +207,8 @@ class ConeBevNode(Node):
             else:
                 self.get_logger().info('고깔 없음')
 
-        self._publish_debug(bev, mask, cones, msg.header)
+        if self.pub_dbg is not None:
+            self._publish_debug(bev, mask, cones, msg.header)
 
     def find_cones(self, mask):
         """연결요소마다 (x, y, 반폭, 좌벽y, 우벽y) 를 만든다."""

@@ -27,7 +27,7 @@ LAUNCH_ARGS=(
   "camera_topic:=/camera/image_raw"
   "scan_topic:=/scan"
   "v_max:=1.2"               # 안정되면 올릴 것
-  "open_rqt:=false"          # 무인 실행이므로 GUI 는 끈다
+  "debug_view:=false"        # 무인 실행이므로 시각화는 끈다
 )
 
 log() { echo "[myapp] $*"; }

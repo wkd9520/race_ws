@@ -309,12 +309,32 @@ if timers:
               '(%s)' % inner[0].kw.get('package'))
         check('  토픽을 인자로 준다',
               bool(inner[0].kw.get('arguments')))
-        check('  open_rqt 로 끌 수 있다',
+        check('  debug_view 로 끌 수 있다',
               inner[0].kw.get('condition') is not None)
 check('기본 토픽이 우리 오버레이',
       args.get('rqt_topic') == '/race/debug/path_overlay',
       '(%s)' % args.get('rqt_topic'))
-check('  헤드리스용으로 끌 수 있게 인자가 있다', 'open_rqt' in args)
+
+
+print('\n[5b] 시각화가 기본으로 꺼져 있는가 ★')
+# 실차는 헤드리스이고, 오버레이 이미지를 만드는 CPU 가 아깝다.
+# 스위치 하나로 세 가지가 같이 움직여야 한다.
+check('debug_view 인자가 있고 기본이 꺼짐',
+      args.get('debug_view') == 'false', '(%s)' % args.get('debug_view'))
+check('  open_rqt 는 없어졌다 (debug_view 로 통합)', 'open_rqt' not in args)
+
+ovl = next((n for n in nodes if n.kw.get('name') == 'race_overlay_node'), None)
+check('  race_overlay_node 가 조건부다', ovl is not None
+      and ovl.kw.get('condition') is not None)
+
+cone = next((n for n in nodes if n.kw.get('name') == 'cone_bev_node'), None)
+cone_dbg = None
+if cone:
+    for entry in (cone.kw.get('parameters') or []):
+        if isinstance(entry, dict) and 'publish_debug' in entry:
+            cone_dbg = entry['publish_debug']
+check('  cone_bev_node 의 디버그 이미지도 같이 꺼진다 ★',
+      getattr(getattr(cone_dbg, 'value', None), 'name', None) == 'debug_view')
 
 
 print('\n[6] 실차에서 자주 바꾸는 값이 인자로 나와 있는가')
