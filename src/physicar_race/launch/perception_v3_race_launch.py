@@ -7,14 +7,26 @@
 
     ros2 launch physicar_race perception_v3_race_launch.py
 
-같이 뜨는 것 (전부 인자로 끌 수 있다):
+같이 뜨는 것:
 
-    카메라 틸트 -0.5236 rad 를 10Hz 로 계속 발행   publish_tilt:=false
-    rqt_image_view 로 /race/debug/path_overlay     open_rqt:=false
+    rqt_image_view 로 /race/debug/path_overlay     open_rqt:=false 로 끔
 
-헤드리스 환경이면 open_rqt:=false 로 꺼야 한다. 틸트를 시뮬레이터나 다른
-노드가 이미 잡고 있으면 publish_tilt:=false 로 끄고 그쪽에 맡길 것 --
-둘이 동시에 보내면 값이 번갈아 들어간다.
+헤드리스 환경이면 open_rqt:=false 로 꺼야 한다.
+
+━━━ 카메라 틸트는 여기서 안 건드린다 ━━━
+
+V2 요구사항에 tilt -0.5236 rad (-30도) 가 required 로 명시돼 있고, 그 값이
+아니면 IPM 이 그만큼 틀어져 BEV 가 왜곡된다. 하지만 이 launch 는 그걸
+발행하지 않는다 -- 시뮬레이터나 다른 노드가 이미 틸트를 잡고 있으면 둘이
+동시에 보내 값이 번갈아 들어가기 때문이다.
+
+필요하면 별도 터미널에서 직접:
+
+    ros2 topic pub -r 10 /camera/tilt std_msgs/msg/Float64 "{data: -0.5235987756}"
+
+현재 값 확인:
+
+    ros2 topic echo /joint_states --once | grep -A3 camera_tilt
 
 /speed 를 발행하는 노드는 항상 하나여야 한다. 이전 launch 가 안 죽었으면
 명령이 번갈아 들어가 주행이 망가진다:
@@ -38,8 +50,8 @@ camera_optical_frame_corrected` TF. 이 저장소의 이전 스택들은 TF를 �
 """
 
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, ExecuteProcess,
-                            IncludeLaunchDescription, TimerAction)
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription,
+                            TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -90,14 +102,6 @@ def generate_launch_description():
         DeclareLaunchArgument('wall_margin_m', default_value='0.10'),
         DeclareLaunchArgument('max_offset_m', default_value='0.30'),
         DeclareLaunchArgument('track_half_m', default_value='0.37'),
-
-        # --- 카메라 틸트 고정 ---
-        # V2 요구사항에 tilt -0.5236 rad (-30도) 가 required 로 명시돼 있다.
-        # 이 값이 아니면 IPM 이 그만큼 틀어져 BEV 가 왜곡된다.
-        # 시뮬레이터가 값을 물고 있지 않을 수 있어 주기적으로 계속 보낸다.
-        DeclareLaunchArgument('publish_tilt', default_value='true'),
-        DeclareLaunchArgument('camera_tilt', default_value='-0.5235987756'),
-        DeclareLaunchArgument('tilt_rate', default_value='10'),
 
         # --- 디버그 화면 ---
         DeclareLaunchArgument('open_rqt', default_value='true'),
@@ -165,15 +169,6 @@ def generate_launch_description():
         }],
     )
 
-    tilt = ExecuteProcess(
-        cmd=['ros2', 'topic', 'pub',
-             '-r', LaunchConfiguration('tilt_rate'),
-             '/camera/tilt', 'std_msgs/msg/Float64',
-             ['{data: ', LaunchConfiguration('camera_tilt'), '}']],
-        output='screen',
-        condition=IfCondition(LaunchConfiguration('publish_tilt')),
-    )
-
     # rqt 는 늦게 띄운다. 토픽이 생기기 전에 열면 목록이 비어 있어서
     # 매번 새로고침을 눌러야 한다.
     rqt = TimerAction(
@@ -187,4 +182,4 @@ def generate_launch_description():
     )
 
     return LaunchDescription(
-        args + [perception_v3, cones, follow, overlay, tilt, rqt])
+        args + [perception_v3, cones, follow, overlay, rqt])

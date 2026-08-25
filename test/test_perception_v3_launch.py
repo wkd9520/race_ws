@@ -188,21 +188,13 @@ if len(grids) == 2:
           and vals[0].get('bev_resolution') == 0.01)
 
 
-print('\n[4] 카메라 틸트 자동 발행')
-check('ExecuteProcess 가 하나', len(procs) == 1, '(%d개)' % len(procs))
-if procs:
-    cmd = procs[0].cmd
-    flat = [c for c in cmd if isinstance(c, str)]
-    check('  ros2 topic pub 이다',
-          flat[:3] == ['ros2', 'topic', 'pub'], '(%s)' % flat[:3])
-    check('  /camera/tilt 로 보낸다', '/camera/tilt' in flat)
-    check('  Float64 타입', 'std_msgs/msg/Float64' in flat)
-    check('  publish_tilt 로 끌 수 있다',
-          procs[0].kw.get('condition') is not None)
-check('기본 틸트가 -30도 (V2 요구사항)',
-      args.get('camera_tilt') == '-0.5235987756',
-      '(%s)' % args.get('camera_tilt'))
-check('  기본 켜짐', args.get('publish_tilt') == 'true')
+print('\n[4] 카메라 틸트를 이 launch 가 건드리지 않는가')
+# 틸트는 V2 요구사항상 -0.5236 rad 여야 하지만, 시뮬레이터나 다른 노드가
+# 이미 잡고 있으면 둘이 동시에 보내 값이 번갈아 들어간다. 그래서 여기서는
+# 아예 발행하지 않고 필요할 때 손으로 띄우기로 했다.
+check('외부 프로세스를 안 띄운다', len(procs) == 0, '(%d개)' % len(procs))
+for gone in ('publish_tilt', 'camera_tilt', 'tilt_rate'):
+    check('  %s 인자가 남아 있지 않다' % gone, gone not in args)
 
 
 print('\n[5] rqt 자동 실행')
