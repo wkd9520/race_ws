@@ -341,9 +341,24 @@ same = {getattr(getattr(v3_over.get(k2), 'value', None), 'name', None)
 check('  다섯이 같은 인자 하나로 움직인다', same == {'lidar_avoidance'},
       '(%s)' % same)
 check('  기본이 꺼짐', args.get('lidar_avoidance') == 'false')
-# 중앙선 품질을 올리는 것들이라 회피와 무관하다. 같이 꺼지면 안 된다.
-for key in ('center_hybrid.enabled', 'center_history.enabled'):
-    check('  %s 는 안 건드린다' % key, key not in v3_over)
+# 중앙선 품질을 올리는 것들이라 회피와 무관하다. 라이다 스위치에
+# 딸려 꺼지면 안 된다.
+check('  center_hybrid.enabled 는 안 건드린다',
+      'center_hybrid.enabled' not in v3_over)
+# center_history 는 자기 인자를 갖는다 -- 켜져 있으면 매 프레임이
+# odom TF 를 기다려서, 실측으로 프레임의 94%가 대기 큐를 탔다.
+# 다만 **라이다 스위치에 묶이면 안 된다.** 회피를 끄는 것과 경로
+# 이력을 끄는 것은 완전히 다른 결정이다.
+history = v3_over.get('center_history.enabled')
+check('  center_history 는 자기 인자로 움직인다',
+      getattr(getattr(history, 'value', None), 'name', None)
+      == 'center_history',
+      '(%s)' % getattr(getattr(history, 'value', None), 'name', None))
+check('  center_history 가 라이다 스위치에 안 묶인다 ★',
+      getattr(getattr(history, 'value', None), 'name', None)
+      != 'lidar_avoidance')
+check('  기본은 켜짐 (실차에서 재보고 정한다)',
+      args.get('center_history') == 'true')
 
 check('  틸트 유지 노드가 있다 (hold_tilt)', 'hold_tilt' in args,
       '(기본 %s)' % args.get('hold_tilt'))

@@ -124,6 +124,26 @@ def generate_launch_description():
         # 를 먼저 보고 정할 것. immediate 가 대부분이면 0.06 으로 내린다.
         DeclareLaunchArgument('tf_max_pending_age', default_value='0.25'),
         DeclareLaunchArgument('tf_retry_period', default_value='0.02'),
+
+        # --- 경로 이력 (odom 의존) ---
+        # 최근 중앙 경로를 odom 좌표계에 저장해뒀다가, 검출이 순간적으로
+        # 실패하면 그걸로 복구하는 기능이다.
+        #
+        # **그 대가로 매 프레임이 odom TF 를 기다린다.** 인지는 이미지의
+        # 정확한 시각에 맞는 TF 를 요구하는데, 검사가 둘이다:
+        #
+        #     base_footprint -> camera_optical_frame_corrected   (50 Hz, 빠름)
+        #     base_footprint -> odom                             (이게 늦다)
+        #
+        # 실측이 이걸 증명한다. TF 대기를 0.25 -> 0.06 으로 줄였더니
+        #
+        #     지연  0.174 -> 0.086   (TF 가 제때 오는 프레임은 빠르다)
+        #     갱신  11.5  -> 0.9 Hz  (**94%가 odom 을 기다리고 있었다**)
+        #
+        # 끄면 odom 의존이 사라진다. 잃는 것은 이력 복구인데, 우리는
+        # follow 노드가 경로 끊김에 1초까지 마지막 조향을 유지한다
+        # (grace_s). 순간적인 검출 실패는 그쪽이 받아준다.
+        DeclareLaunchArgument('center_history', default_value='true'),
         DeclareLaunchArgument('joint_states_topic', default_value='/joint_states'),
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
@@ -363,6 +383,7 @@ def generate_launch_description():
             'bev.y_max': _f('bev_y_max'),
             'bev.resolution': _f('bev_resolution'),
             'projection.pitch_offset_deg': _f('pitch_offset_deg'),
+            'center_history.enabled': _b('center_history'),
             'tf_wait.max_pending_age': _f('tf_max_pending_age'),
             'tf_wait.timer_period': _f('tf_retry_period'),
             'sim_geometry.camera_height_correction_z':
