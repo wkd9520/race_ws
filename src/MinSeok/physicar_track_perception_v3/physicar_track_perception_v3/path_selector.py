@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from .roles import CENTER, LEFT, RIGHT, UNKNOWN, classify, RoleConfig
 import numpy as np
-from .geometry import tangents
+from .geometry import cumulative_s, tangents
 
 DIRECT_CENTER_OBSERVED = 'DIRECT_CENTER_OBSERVED'
 WHITE_HALF_WIDTH_OFFSET = 'WHITE_HALF_WIDTH_OFFSET'
@@ -38,7 +38,9 @@ def _stitch_candidates(centers, *, gap_limit=0.30,
     seed = orient(min(centers, key=lambda c: min(np.linalg.norm(c.polyline.points[0]),
                                                   np.linalg.norm(c.polyline.points[-1]))))
     chain = [seed]
-    used = {id(seed)}
+    # Orientation may create a temporary Component object.  Track the stable
+    # component ID, otherwise a reversed original can be selected repeatedly.
+    used = {seed.component_id}
     bridges = 0
     while True:
         current = chain[-1].polyline.points
@@ -46,7 +48,7 @@ def _stitch_candidates(centers, *, gap_limit=0.30,
         a = current[-1]
         choices = []
         for candidate in centers:
-            if id(candidate) in used:
+            if candidate.component_id in used:
                 continue
             candidate = orient(candidate, a)
             points = candidate.polyline.points
@@ -70,7 +72,7 @@ def _stitch_candidates(centers, *, gap_limit=0.30,
         if not choices:
             break
         _, _, _, chosen = min(choices, key=lambda item: item[:3])
-        chain.append(chosen); used.add(id(chosen)); bridges += 1
+        chain.append(chosen); used.add(chosen.component_id); bridges += 1
     points = []
     for index, item in enumerate(chain):
         current = item.polyline.points
@@ -98,7 +100,55 @@ def select_orange(components, config=RoleConfig(), *, gap_limit=0.30,
                               tangent_angle_limit=tangent_angle_limit,
                               lateral_limit=lateral_limit)
 
-def select_unknown_white(components, track_width):
+def _windowed_tangents(points, half_window=0.15):
+    """Return ordered secant tangents without trusting one endpoint edge."""
+    points = np.asarray(points, dtype=float)
+    arc = cumulative_s(points)
+    output = []
+    previous = None
+    for index, value in enumerate(arc):
+        begin = int(np.searchsorted(
+            arc, value - float(half_window), side='left'))
+        end = int(np.searchsorted(
+            arc, value + float(half_window), side='right') - 1)
+        if begin == end:
+            begin = max(0, index - 1)
+            end = min(len(points) - 1, index + 1)
+        direction = points[end] - points[begin]
+        length = float(np.linalg.norm(direction))
+        if length <= 1e-12:
+            direction = tangents(points)[index]
+        else:
+            direction = direction / length
+        # Component graph order is authoritative.  Prevent only a local
+        # 180-degree tangent-axis flip; do not sort in global X/Y.
+        if previous is not None and float(np.dot(direction, previous)) < 0.0:
+            direction = -direction
+        output.append(direction)
+        previous = direction
+    return np.asarray(output, dtype=float)
+
+
+def _nearest_polyline_distances(points, reference):
+    points = np.asarray(points, dtype=float)
+    reference = np.asarray(reference, dtype=float)
+    segments = np.diff(reference, axis=0)
+    length_squared = np.einsum('ij,ij->i', segments, segments)
+    result = []
+    for point in points:
+        fraction = np.einsum(
+            'ij,ij->i', point - reference[:-1], segments)
+        fraction = np.divide(
+            fraction, length_squared, out=np.zeros_like(fraction),
+            where=length_squared > 1e-12)
+        fraction = np.clip(fraction, 0.0, 1.0)
+        projected = reference[:-1] + fraction[:, None] * segments
+        result.append(float(np.min(np.linalg.norm(
+            projected - point, axis=1))))
+    return np.asarray(result, dtype=float)
+
+
+def select_unknown_white(components, track_width, reference_path=None):
     """Create a temporary center path from the nearest observed WHITE line.
 
     This is deliberately frame-local: no LEFT/RIGHT identity is inferred.
@@ -122,23 +172,59 @@ def select_unknown_white(components, track_width):
     else:
         sample_idx = np.arange(len(points))
     samples = points[sample_idx]
-    ts = tangents(points)[sample_idx]
-    centers = []
+    ts = _windowed_tangents(points)[sample_idx]
     half = 0.5 * float(track_width)
-    previous_offset = None
-    for point, tangent in zip(samples, ts):
-        normal = np.asarray([-tangent[1], tangent[0]], dtype=float)
-        toward_vehicle = -np.asarray(point, dtype=float)
-        projected = float(np.dot(toward_vehicle, normal)) * normal
-        if np.linalg.norm(projected) < 1e-6 and previous_offset is not None:
-            offset_dir = previous_offset
-        else:
-            offset_dir = projected / max(np.linalg.norm(projected), 1e-12)
-            if previous_offset is not None and float(np.dot(offset_dir, previous_offset)) < 0.0:
-                offset_dir = -offset_dir
-        previous_offset = offset_dir
-        centers.append(point + half * offset_dir)
-    centers = np.asarray(centers)
+    normals = np.column_stack((-ts[:, 1], ts[:, 0]))
+    plus = samples + half * normals
+    minus = samples - half * normals
+
+    # Priority 1: when current ORANGE overlaps this boundary, select the
+    # complete +/-W/2 hypothesis that agrees with the observed center.  The
+    # 0.30 m overlap gate reuses the current ORANGE fragment join scale.
+    selected = None
+    reason = None
+    if reference_path is not None:
+        reference = np.asarray(
+            getattr(reference_path, 'points', reference_path), dtype=float)
+        if (reference.ndim == 2 and reference.shape[1] == 2
+                and len(reference) >= 2 and np.all(np.isfinite(reference))):
+            plus_distance = _nearest_polyline_distances(plus, reference)
+            minus_distance = _nearest_polyline_distances(minus, reference)
+            overlap = np.minimum(plus_distance, minus_distance) <= 0.30
+            if int(np.count_nonzero(overlap)) >= 2:
+                plus_score = float(np.median(plus_distance[overlap]))
+                minus_score = float(np.median(minus_distance[overlap]))
+                if abs(plus_score - minus_score) > 1e-6:
+                    selected = plus if plus_score < minus_score else minus
+                    reason = 'unknown_white_orange_reference_offset'
+
+    # Priority 2: without a usable ORANGE overlap, use a component-level
+    # median.  One noisy endpoint can no longer seed and reverse every later
+    # normal as happened with the old previous_offset propagation.
+    signed_vehicle_side = np.einsum('ij,ij->i', -samples, normals)
+    if selected is None:
+        median_side = float(np.median(signed_vehicle_side))
+        if abs(median_side) > 1e-3:
+            selected = plus if median_side > 0.0 else minus
+            reason = 'unknown_white_vehicle_median_offset'
+
+    # Priority 3: user-requested non-empty fallback.  Pick the most
+    # informative interior sample and force the normal toward the vehicle.
+    # LEFT/RIGHT identity is deliberately not required here.
+    if selected is None:
+        candidates = (np.arange(1, len(samples) - 1)
+                      if len(samples) > 2 else np.arange(len(samples)))
+        representative = int(candidates[np.argmax(
+            np.abs(signed_vehicle_side[candidates]))])
+        side = float(signed_vehicle_side[representative])
+        if abs(side) <= 1e-12:
+            plus_distance = float(np.linalg.norm(plus[representative]))
+            minus_distance = float(np.linalg.norm(minus[representative]))
+            side = 1.0 if plus_distance <= minus_distance else -1.0
+        selected = plus if side > 0.0 else minus
+        reason = 'unknown_white_vehicle_forced_offset'
+
+    centers = np.asarray(selected, dtype=float)
     if len(centers) >= 3:
         smoothed = centers.copy()
         smoothed[1:-1] = (centers[:-2] + centers[1:-1] + centers[2:]) / 3.0
@@ -146,7 +232,7 @@ def select_unknown_white(components, track_width):
     from .geometry import OrderedPolyline
     return PathResult(True, OrderedPolyline.from_points(np.asarray(centers)),
                       WHITE_HALF_WIDTH_OFFSET, UNKNOWN,
-                      'unknown_white_vehicle_normal_offset', (boundary.component_id,), 0)
+                      reason, (boundary.component_id,), 0)
 
 def select(components, config=RoleConfig(), **kwargs):
     """Compatibility wrapper for non-production role experiments."""

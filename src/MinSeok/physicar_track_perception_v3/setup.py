@@ -25,5 +25,6 @@ setup(
     license='Apache-2.0',
     entry_points={'console_scripts': [
         'bev_frontend_node = physicar_track_perception_v3.bev_frontend_node:main',
+        'camera_tilt_publisher = physicar_track_perception_v3.camera_tilt_publisher:main',
     ]},
 )

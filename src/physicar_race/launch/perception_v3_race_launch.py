@@ -19,20 +19,32 @@ BEV 격자와 투영 보정은 launch 인자다. 눈으로 보며 맞출 값들�
 
     ros2 launch physicar_race perception_v3_race_launch.py       bev_x_max:=1.4 pitch_offset_deg:=1.5
 
-━━━ 카메라 틸트는 여기서 안 건드린다 ━━━
+━━━ 실차 설정을 쓴다 ━━━
 
-V2 요구사항에 tilt -0.5236 rad (-30도) 가 required 로 명시돼 있고, 그 값이
-아니면 IPM 이 그만큼 틀어져 BEV 가 왜곡된다. 하지만 이 launch 는 그걸
-발행하지 않는다 -- 시뮬레이터나 다른 노드가 이미 틸트를 잡고 있으면 둘이
-동시에 보내 값이 번갈아 들어가기 때문이다.
+perception_v3_real.yaml 을 읽는다. 시뮬용과 카메라 내부 파라미터가 다르다:
 
-필요하면 별도 터미널에서 직접:
+    시뮬  fx=fy=201.4  cx=240  cy=180   D 있음   (화각 100도)
+    실차  fx=fy=260.9  cx=231  cy=169   D 전부 0 (드라이버가 이미 보정)
 
-    ros2 topic pub -r 10 /camera/tilt std_msgs/msg/Float64 "{data: -0.5235987756}"
+시뮬 값으로 실차 영상을 펴면 BEV 가 통째로 틀어진다. 실제로 겪었다.
 
-현재 값 확인:
+━━━ LiDAR 회피는 꺼둔다 ━━━
 
-    ros2 topic echo /joint_states --once | grep -A3 camera_tilt
+새 버전에는 LiDAR 원형 장애물 회피가 들어 있다. 우리는 초록 고깔을
+카메라로 보고 피하므로(cone_bev_node) lidar_avoidance:=false 로 끈다.
+스위치 다섯 개가 이 인자 하나로 같이 움직인다.
+
+center_hybrid / center_history 는 중앙선 경로 품질을 올리는 것이라
+회피와 무관하다 -- 켠 채로 둔다.
+
+━━━ 틸트 ━━━
+
+서보가 처지면 /joint_states 는 명령값을 보고하는데 실제 각도는 달라진다.
+그러면 TF 가 거짓이 되고 BEV 가 틀어진다. 실차 라이브에서는:
+
+    hold_tilt:=true
+
+로스백 재생 때는 필요 없다(각도가 이미 기록돼 있다).
 
 /speed 를 발행하는 노드는 항상 하나여야 한다. 이전 launch 가 안 죽었으면
 명령이 번갈아 들어가 주행이 망가진다:
@@ -88,34 +100,51 @@ def generate_launch_description():
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
         # --- BEV 격자: 세 노드가 이 값을 같이 쓴다 ---
-        # 카메라가 낮으면(실측 0.148 m) 먼 곳이 스치듯 보여 소스 한 줄이
-        # 지면 수십 cm 를 덮는다. 2.0 m 까지 잡으면 위쪽 절반이 번진다.
-        #   1.0 m -> 확대율 4x,  1.4 m -> 7x,  1.9 m -> 22x
-        # 0.157 m 아래는 시야각 밖이라 항상 검다.
-        DeclareLaunchArgument('bev_x_min', default_value='0.20'),
-        DeclareLaunchArgument('bev_x_max', default_value='1.10'),
-        DeclareLaunchArgument('bev_y_min', default_value='-0.50'),
-        DeclareLaunchArgument('bev_y_max', default_value='0.50'),
+        # 기본값은 MinSeok 님 perception_v3_real.yaml 과 같게 둔다.
+        # 그 설정으로 실차에서 깔끔한 BEV 가 나온 것이 확인됐으므로,
+        # 우리가 임의로 좁히지 않는다. 번지면 그때 x_max 를 줄인다.
+        DeclareLaunchArgument('bev_x_min', default_value='0.10'),
+        DeclareLaunchArgument('bev_x_max', default_value='2.00'),
+        DeclareLaunchArgument('bev_y_min', default_value='-0.75'),
+        DeclareLaunchArgument('bev_y_max', default_value='0.75'),
         DeclareLaunchArgument('bev_resolution', default_value='0.01'),
 
         # --- 투영 보정: 눈으로 보며 맞추는 값 ---
-        # TF 가 이미 30도를 주므로 이건 그 위의 추가 보정이다. 2.8 은
-        # MinSeok 님 시뮬레이터에서 맞춘 값이라 실물에선 다를 수 있다.
-        # 직선에서 흰선이 평행해질 때까지 0.5씩 움직인다(0 도 후보다).
-        DeclareLaunchArgument('pitch_offset_deg', default_value='2.8'),
+        # 실차 yaml 은 둘 다 0 이다. 주석에 이유가 적혀 있다 --
+        # -0.018 은 Gazebo 전용 보정이고, 피치는 실물 URDF/TF 를 그대로 믿는다.
+        DeclareLaunchArgument('pitch_offset_deg', default_value='0.0'),
         DeclareLaunchArgument('camera_height_correction_z',
-                              default_value='-0.018'),
+                              default_value='0.0'),
 
         # 카메라 내부 파라미터. camera_info 가 껍데기(전부 0)라 yaml 이
         # 유일한 진실이고, 이 값은 MinSeok 님 시뮬레이터 카메라 기준이다.
         #   [fx, 0, cx,  0, fy, cy,  0, 0, 1]
         # fx=201.4 는 수평 화각 100도라는 뜻 -- 실물 렌즈가 좁으면 더 커야 한다.
         # 바닥 체커보드가 BEV 에서 정사각형이 되는 값이 정답이다.
+        # 실차 값이다(perception_v3_real.yaml). 시뮬 값(fx=201.4, 화각 100도)과
+        # 다르다 -- 드라이버가 640x480 을 찍어 OpenCV 로 왜곡보정한 뒤 480x360
+        # 으로 내보내기 때문에, cx/cy 도 정중앙이 아니고 D 는 전부 0 이다.
         DeclareLaunchArgument(
             'camera_k',
-            default_value='[201.38988018035889, 0.0, 240.0,'
-                           ' 0.0, 201.38988733291626, 180.0,'
+            default_value='[260.875, 0.0, 231.31516130651107,'
+                           ' 0.0, 260.875, 169.16236121207476,'
                            ' 0.0, 0.0, 1.0]'),
+        DeclareLaunchArgument(
+            'camera_d', default_value='[0.0, 0.0, 0.0, 0.0, 0.0]'),
+
+        # --- LiDAR 회피: 우리는 안 쓴다 ---
+        # MinSeok 님 새 버전에는 LiDAR 원형 장애물 회피가 들어 있다.
+        # 우리는 초록 고깔을 카메라로 보고 피하므로(cone_bev_node) 끈다.
+        # center_hybrid / center_history 는 중앙선 경로 품질을 올리는
+        # 것이라 회피와 무관하다 -- 켠 채로 둔다.
+        DeclareLaunchArgument('lidar_avoidance', default_value='false'),
+
+        # --- 카메라 틸트 유지 ---
+        # 서보가 중력에 처지면 /joint_states 는 명령값을 보고하는데 실제
+        # 각도는 달라진다. 그러면 TF 가 거짓이 되고 BEV 가 통째로 틀어진다.
+        # 로스백 재생 때는 필요 없으니 기본은 꺼둔다.
+        DeclareLaunchArgument('hold_tilt', default_value='false'),
+        DeclareLaunchArgument('tilt_degrees', default_value='-30.0'),
 
         # --- 우리 컨트롤러 ---
         DeclareLaunchArgument('control_hz', default_value='30.0'),
@@ -151,9 +180,23 @@ def generate_launch_description():
     # 값을 바꿀 때마다 그의 yaml 을 손으로 고쳐야 하기 때문이다.
     # **코드는 여전히 한 줄도 안 건드린다** -- 실행 인자만 우리가 준다.
     # 노드 구성은 그의 launch 와 동일하게 유지한다(패키지/실행파일/이름/리맵).
+    # 실차용 yaml 을 쓴다. 시뮬용(perception_v3.yaml)과 카메라 내부
+    # 파라미터가 다르다 -- 그게 BEV 가 틀어지던 원인이었다.
     v3_params = os.path.join(
         get_package_share_directory('physicar_track_perception_v3'),
-        'config', 'perception_v3.yaml')
+        'config', 'perception_v3_real.yaml')
+
+    # 서보가 처지지 않게 틸트를 계속 잡아준다. 실차 라이브에서만 켠다.
+    tilt_hold = Node(
+        package='physicar_track_perception_v3',
+        executable='camera_tilt_publisher',
+        name='perception_v3_camera_tilt_publisher', output='screen',
+        parameters=[{
+            'use_sim_time': _b('use_sim_time'),
+            'tilt_degrees': _f('tilt_degrees'),
+        }],
+        condition=IfCondition(LaunchConfiguration('hold_tilt')),
+    )
 
     tf_broadcaster = Node(
         package='physicar_camera_tf_correction',
@@ -181,6 +224,14 @@ def generate_launch_description():
                 _f('camera_height_correction_z'),
             'camera.K': ParameterValue(LaunchConfiguration('camera_k'),
                                        value_type=List[float]),
+            'camera.D': ParameterValue(LaunchConfiguration('camera_d'),
+                                       value_type=List[float]),
+            # LiDAR 회피 일괄 스위치. 우리는 카메라로 고깔을 피한다.
+            'avoidance.shadow_enabled': _b('lidar_avoidance'),
+            'avoidance_circle.enabled': _b('lidar_avoidance'),
+            'obstacle_track.enabled': _b('lidar_avoidance'),
+            'active_lifecycle.enabled': _b('lidar_avoidance'),
+            'avoidance_recovery.enabled': _b('lidar_avoidance'),
         }],
         remappings=[('/camera/image_raw', LaunchConfiguration('camera_topic')),
                     ('/joint_states',
@@ -247,4 +298,5 @@ def generate_launch_description():
     )
 
     return LaunchDescription(
-        args + [tf_broadcaster, perception_v3, cones, follow, overlay, rqt])
+        args + [tilt_hold, tf_broadcaster, perception_v3,
+                cones, follow, overlay, rqt])

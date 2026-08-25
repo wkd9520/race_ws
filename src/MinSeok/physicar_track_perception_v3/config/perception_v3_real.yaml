@@ -1,17 +1,23 @@
 physicar_track_perception_v3:
   ros__parameters:
+    # DERIVED FROM CONFIRMED SOURCE: the hardware driver captures 640x480,
+    # applies its configured OpenCV undistortion, and publishes 480x360.
+    # Physical-camera end-to-end landmark validation is still required.
     camera.width: 480
     camera.height: 360
-    camera.K: [201.38988018035889, 0.0, 240.0, 0.0, 201.38988733291626, 180.0, 0.0, 0.0, 1.0]
-    camera.D: [-0.045, -0.0001, -0.0003, -0.0001, 0.001]
+    camera.K: [260.875, 0.0, 231.31516130651107, 0.0, 260.875, 169.16236121207476, 0.0, 0.0, 1.0]
+    camera.D: [0.0, 0.0, 0.0, 0.0, 0.0]
     bev.x_min: 0.1
     bev.x_max: 2.0
     bev.y_min: -0.75
     bev.y_max: 0.75
     bev.resolution: 0.01
     ground_z: 0.0
-    sim_geometry.camera_height_correction_z: -0.018
-    projection.pitch_offset_deg: 2.8
+    # REUSED CONFIRMED VALUE: 0 disables the Gazebo-only -18 mm correction.
+    # PROPOSED INITIAL VALUE: zero pitch offset follows nominal real URDF/TF;
+    # physical ground-landmark calibration is still required.
+    sim_geometry.camera_height_correction_z: 0.0
+    projection.pitch_offset_deg: 0.0
     tf_wait.max_pending_age: 0.25
     tf_wait.timer_period: 0.02
     path_proximity.max_start_distance: 0.60
@@ -21,6 +27,8 @@ physicar_track_perception_v3:
     center_history.enabled: true
     center_history.max_age: 0.50
     center_history.max_entries: 8
+    # RUNTIME TUNING REQUIRED on the physical track: the following colour and
+    # track geometry values are inherited from the current V3 SIM baseline.
     white.track_width: 0.70
     white.expected_half_width: 0.37
     white.half_width_tolerance: 0.10
@@ -68,14 +76,10 @@ physicar_track_perception_v3:
     obstacle_track.retention_age: 0.50
     obstacle_track.max_voting_tracks: 2
     active_lifecycle.enabled: true
-    # Derived from live URDF body + articulated wheel collision envelope.
     active_lifecycle.robot_bounding_radius: 0.16179830918104007
-    # ACTIVE_LOST release requires path-passed plus this center-distance gate.
     active_lifecycle.lost_release_radius_multiplier: 1.2
     avoidance_recovery.enabled: true
-    # PROPOSED INITIAL VALUES: 4 and 5 scans are about 0.4/0.5 s at 10 Hz.
     avoidance_recovery.slow_voting_max_frames: 4
     avoidance_recovery.heading_max_frames: 5
     avoidance_recovery.max_heading_correction_rad: 0.25
-    # PROPOSED INITIAL VALUE: leaves margin above the 0.1618 m robot bound.
     avoidance_recovery.emergency_distance: 0.45

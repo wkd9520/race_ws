@@ -163,9 +163,12 @@ if v3:
           v3.kw.get('name') == 'physicar_track_perception_v3',
           '(%s)' % v3.kw.get('name'))
     params = v3.kw.get('parameters') or []
-    check('  yaml 을 먼저 읽는다',
+    # 실차용 yaml 이어야 한다. 시뮬용과 camera.K 가 달라서, 잘못 읽으면
+    # 다른 카메라로 계산하게 되고 BEV 가 통째로 틀어진다 -- 실제로 겪었다.
+    check('  실차용 yaml 을 먼저 읽는다 ★',
           bool(params) and isinstance(params[0], str)
-          and params[0].endswith('perception_v3.yaml'))
+          and params[0].endswith('perception_v3_real.yaml'),
+          '(%s)' % (os.path.basename(params[0]) if params else None))
     check('  그 위에 우리 값을 덮는다 (뒤가 이긴다)',
           len(params) >= 2 and isinstance(params[1], dict))
     remaps = dict(v3.kw.get('remappings') or [])
@@ -224,25 +227,72 @@ if len(grids) == 3:
 
 for key in ('bev_x_min', 'bev_x_max', 'bev_y_min', 'bev_y_max',
             'bev_resolution', 'pitch_offset_deg',
-            'camera_height_correction_z', 'camera_k'):
+            'camera_height_correction_z', 'camera_k', 'camera_d'):
     check('  %s 인자가 있다' % key, key in args)
 
-# camera_info 가 껍데기라 yaml/인자가 유일한 진실이다. 기본값이 원본
-# yaml 과 어긋나면 조용히 다른 카메라로 계산하게 된다.
+# camera_info 가 껍데기(전부 0)라 yaml/인자가 유일한 진실이다.
+# 시뮬 값(fx=201.4)을 실차에 쓰면 BEV 가 통째로 틀어진다 -- 겪었다.
 k = args.get('camera_k', '')
-check('  camera_k 기본값이 원본 yaml 과 같다 ★',
-      '201.38988018035889' in k and '201.38988733291626' in k
-      and '240.0' in k and '180.0' in k,
+check('  camera_k 가 실차 값이다 ★ (시뮬 201.4 아님)',
+      '260.875' in k and '231.31516130651107' in k
+      and '169.16236121207476' in k and '201.389' not in k,
       '(%s)' % k)
+# 드라이버가 이미 왜곡보정을 해서 내보내므로 D 는 전부 0 이어야 한다.
+# 시뮬 값을 쓰면 왜곡을 두 번 먹인다.
+d = args.get('camera_d', '')
+check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
+      '0.045' not in d and d.count('0.0') >= 5, '(%s)' % d)
+
+check('격자 기본값이 실차 yaml 과 같다',
+      args.get('bev_x_min') == '0.10' and args.get('bev_x_max') == '2.00'
+      and args.get('bev_y_min') == '-0.75' and args.get('bev_y_max') == '0.75')
+check('투영 보정 기본값이 실차 yaml 과 같다 (둘 다 0)',
+      args.get('pitch_offset_deg') == '0.0'
+      and args.get('camera_height_correction_z') == '0.0',
+      '(pitch %s, height %s)' % (args.get('pitch_offset_deg'),
+                                 args.get('camera_height_correction_z')))
 
 
-print('\n[4] 카메라 틸트를 이 launch 가 건드리지 않는가')
-# 틸트는 V2 요구사항상 -0.5236 rad 여야 하지만, 시뮬레이터나 다른 노드가
-# 이미 잡고 있으면 둘이 동시에 보내 값이 번갈아 들어간다. 그래서 여기서는
-# 아예 발행하지 않고 필요할 때 손으로 띄우기로 했다.
-check('외부 프로세스를 안 띄운다', len(procs) == 0, '(%d개)' % len(procs))
-for gone in ('publish_tilt', 'camera_tilt', 'tilt_rate'):
+print('\n[3b] LiDAR 회피를 끄는가 ★ (우리는 카메라로 고깔을 본다)')
+SWITCHES = ('avoidance.shadow_enabled', 'avoidance_circle.enabled',
+            'obstacle_track.enabled', 'active_lifecycle.enabled',
+            'avoidance_recovery.enabled')
+v3_over = {}
+if v3:
+    for entry in (v3.kw.get('parameters') or []):
+        if isinstance(entry, dict):
+            v3_over.update(entry)
+for key in SWITCHES:
+    check('  %s 를 인자로 묶었다' % key, key in v3_over)
+same = {getattr(getattr(v3_over.get(k2), 'value', None), 'name', None)
+        for k2 in SWITCHES if k2 in v3_over}
+check('  다섯이 같은 인자 하나로 움직인다', same == {'lidar_avoidance'},
+      '(%s)' % same)
+check('  기본이 꺼짐', args.get('lidar_avoidance') == 'false')
+# 중앙선 품질을 올리는 것들이라 회피와 무관하다. 같이 꺼지면 안 된다.
+for key in ('center_hybrid.enabled', 'center_history.enabled'):
+    check('  %s 는 안 건드린다' % key, key not in v3_over)
+
+check('  틸트 유지 노드가 있다 (hold_tilt)', 'hold_tilt' in args,
+      '(기본 %s)' % args.get('hold_tilt'))
+tilt_nodes = [n for n in nodes
+              if n.kw.get('executable') == 'camera_tilt_publisher']
+check('  camera_tilt_publisher 를 띄운다', len(tilt_nodes) == 1)
+if tilt_nodes:
+    check('    조건부다 (로스백 재생 땐 불필요)',
+          tilt_nodes[0].kw.get('condition') is not None)
+
+
+print('\n[4] 틸트는 MinSeok 님 노드에 맡긴다')
+# 한때 ros2 topic pub 을 launch 에서 직접 돌렸다가 뺐다(시뮬레이터와
+# 동시에 쏘면 값이 번갈아 들어간다). 새 버전에 camera_tilt_publisher 가
+# 들어왔으므로 그걸 조건부로 쓴다 -- 직접 pub 하지 않는다.
+check('ros2 topic pub 을 직접 돌리지 않는다', len(procs) == 0,
+      '(%d개)' % len(procs))
+for gone in ('publish_tilt', 'tilt_rate'):
     check('  %s 인자가 남아 있지 않다' % gone, gone not in args)
+check('  대신 tilt_degrees 로 준다', args.get('tilt_degrees') == '-30.0',
+      '(%s)' % args.get('tilt_degrees'))
 
 
 print('\n[5] rqt 자동 실행')
