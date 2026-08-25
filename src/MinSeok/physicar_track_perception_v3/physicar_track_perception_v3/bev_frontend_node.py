@@ -1190,20 +1190,6 @@ class V3Node(Node):
             self.lidar_pending.pop(0)
             self.publish_lidar_overlay(*overlays, image_stamp)
 
-    def debug_wanted(self, *publishers):
-        """구독자가 하나라도 있으면 True.
-
-        아래에서 이걸로 감싸는 것들은 전부 **그림과 진단 문자열**이다.
-        경로 계산이 끝난 뒤에 그리는 것들이라, 안 그려도 /perception_v3/path
-        는 한 글자도 안 바뀐다. 라즈베리파이 5 에서 카메라를 못 따라가서
-        넣었다.
-
-        스위치가 아니라 구독자 수로 판단하는 이유: 끄는 걸 까먹을 스위치가
-        없고, rqt 를 열면 저절로 다시 나온다. cone_bev_node 가 구독하는
-        /perception_v3/debug/bev 도 회피를 켜면 저절로 살아난다.
-        """
-        return any(pub.get_subscription_count() for pub in publishers)
-
     def publish_lidar_overlay(self, overlay, path_overlay,
                               avoidance_overlay, image_stamp):
         message = self.bridge.cv2_to_imgmsg(overlay, 'bgr8')
@@ -1461,9 +1447,8 @@ class V3Node(Node):
         p=lambda k:self.get_parameter(k).value; tf=apply_projection_corrections(self.matrix(tfmsg),camera_height_correction_z=float(p('sim_geometry.camera_height_correction_z')),pitch_offset_deg=float(p('projection.pitch_offset_deg')),pitch_correction_frame='pan_local_y'); out=BevFrontend(self.camera,MetricGroundProjector(self.camera,self.grid,tf,float(p('ground_z')))).process(self.bridge.imgmsg_to_cv2(msg,'bgr8'))
         # Publish the front-end image before the intentionally heavier
         # component graph extraction, so BEV diagnostics remain observable.
-        if self.debug_wanted(self.bev_pub):
-            self.bev_pub.publish(self.bridge.cv2_to_imgmsg(out.bev,'bgr8'))
-            self.stats['bev_published'] += 1
+        self.bev_pub.publish(self.bridge.cv2_to_imgmsg(out.bev,'bgr8'))
+        self.stats['bev_published'] += 1
         seg=self.seg.process(out.bev,out.validity_mask>0)
         items=[]
         for obs in seg.component_frame.observations:
@@ -1757,13 +1742,9 @@ class V3Node(Node):
                 DIRECT_CENTER_OBSERVED,CURRENT_HYBRID_ORANGE_WHITE,
                 CURRENT_HYBRID_WITH_HISTORY_PREFIX) else (255,0,255))
             self.draw_path_points(path, result.path.points, path_color, 2)
-        # 이 함수는 role_image.copy() 로 시작해 그림만 그리고 끝난다.
-        # self 에 대입하는 곳이 없어 호출째로 건너뛰어도 안전하다.
-        if self.debug_wanted(self.center_hybrid_overlay_pub,
-                             self.center_hybrid_diag_pub):
-            self.publish_center_hybrid_debug(
-                role,current_temporary,recovery,prediction,result,
-                self.last_center_hybrid_diagnostic,msg.header.stamp)
+        self.publish_center_hybrid_debug(
+            role,current_temporary,recovery,prediction,result,
+            self.last_center_hybrid_diagnostic,msg.header.stamp)
         reference_path=(result.path.points if result.valid and result.path is not None
                         else np.empty((0,2),dtype=np.float64))
         # Publish the current center geometry before the same-stamp Stage 5.3
@@ -1777,30 +1758,15 @@ class V3Node(Node):
         current_white_components=tuple(
             WhiteComponentView(item.component_id,item.polyline.points)
             for item in whites)
-        # 제일 비싼 진단물이다 -- render_lidar_overlay 가 시작하자마자
-        # expand_bev_canvas 를 두 번 부르고 한 번 더 copy() 한다.
-        # 결과가 가는 곳은 오버레이 토픽 셋뿐이고, 여기서 갱신되는
-        # last_lidar_diagnostic 도 30프레임마다 찍는 로그에만 쓰인다
-        # (제어로 안 간다). 아무도 안 보면 통째로 건너뛴다.
-        if self.debug_wanted(self.lidar_bev_pub, self.path_lidar_pub,
-                             self.avoidance_overlay_pub, self.lidar_diag_pub):
-            lidar_overlays = self.render_lidar_overlay(
-                out.bev,path,reference_path,msg.header.stamp,
-                current_white_components=current_white_components,
-                history_reference=history_reference)
-            if (lidar_overlays is not None
-                    and self.last_lidar_diagnostic.get('tf_success', False)):
-                self.publish_lidar_overlay(
-                    *lidar_overlays, msg.header.stamp)
-        if self.debug_wanted(self.white_pub):
-            self.white_pub.publish(self.bridge.cv2_to_imgmsg(seg.white_mask,'mono8'))
-        if self.debug_wanted(self.orange_pub):
-            self.orange_pub.publish(self.bridge.cv2_to_imgmsg(seg.orange_mask,'mono8'))
-        if self.debug_wanted(self.role_pub):
-            self.role_pub.publish(self.bridge.cv2_to_imgmsg(role,'bgr8'))
-        if self.debug_wanted(self.path_pub):
-            self.path_pub.publish(self.bridge.cv2_to_imgmsg(path,'bgr8'))
-            self.stats['path_overlay_published'] += 1
+        lidar_overlays = self.render_lidar_overlay(
+            out.bev,path,reference_path,msg.header.stamp,
+            current_white_components=current_white_components,
+            history_reference=history_reference)
+        if (lidar_overlays is not None
+                and self.last_lidar_diagnostic.get('tf_success', False)):
+            self.publish_lidar_overlay(
+                *lidar_overlays, msg.header.stamp)
+        self.white_pub.publish(self.bridge.cv2_to_imgmsg(seg.white_mask,'mono8')); self.orange_pub.publish(self.bridge.cv2_to_imgmsg(seg.orange_mask,'mono8')); self.role_pub.publish(self.bridge.cv2_to_imgmsg(role,'bgr8')); self.path_pub.publish(self.bridge.cv2_to_imgmsg(path,'bgr8')); self.stats['path_overlay_published'] += 1
 
     def draw_roles(self, bev, items):
         """V3-only overlay: no inherited endpoint markers or stale colors."""
