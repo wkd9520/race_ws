@@ -321,6 +321,35 @@ for name in ('traffic_light_node', 'start_sequence_node'):
           '%s = physicar_race.%s:main' % (name, name) in setup_src)
 
 
+
+
+print('\n[6] 진단 모드: 카메라는 주행 자세, 바퀴는 안 돈다 ★')
+# 책상에서 TF/지연을 재려면 인지는 다 돌아야 하지만 차는 가만히 있어야
+# 한다. 신호등을 끄는 것으로는 안 된다 -- 경로가 잡히는 순간 출발한다.
+check('hold_position 이 신호등 게이트보다 **먼저** 막는다 ★',
+      follow_src.index('if self.hold_position:')
+      < follow_src.index('if not self._green_seen:'))
+hold_tick = next(n for n in ast.walk(ast.parse(follow_src))
+                 if isinstance(n, ast.FunctionDef) and n.name == 'tick')
+hold_line = next((n.lineno for n in ast.walk(hold_tick)
+                  if isinstance(n, ast.If)
+                  and 'hold_position' in ast.unparse(n.test)), None)
+check('  tick 안에 있고 경로 판단보다 앞이다',
+      hold_line is not None and usable is not None and hold_line < usable,
+      '(정지고정 %s행, 경로판단 %s행)' % (hold_line, usable))
+check('  속도와 조향 둘 다 0 을 낸다',
+      'self.hold_position' in follow_src
+      and follow_src.count('self._publish(0.0, 0.0)') >= 2)
+check('  기본은 꺼짐 (경기에서 켜지면 차가 안 나간다)',
+      "declare_parameter('hold_position', False)" in follow_src
+      and "DeclareLaunchArgument('hold_position', default_value='false')"
+      in launch_src)
+check('skip_light 가 start_sequence 로 간다',
+      "'skip_light': _b('skip_light')" in launch_src
+      and "declare_parameter('skip_light', False)" in start_src)
+check('  skip_light 면 바로 주행 자세로 간다',
+      "DRIVING if bool(p('skip_light').value) else AIMING" in start_src)
+
 print('\n' + '=' * 58)
 if FAILS:
     print('실패 %d건: %s' % (len(FAILS), ', '.join(FAILS)))

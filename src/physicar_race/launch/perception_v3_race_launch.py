@@ -333,6 +333,18 @@ def generate_launch_description():
         # 명령을 보냈다고 카메라가 그 자리에 있는 게 아니다.
         DeclareLaunchArgument('settle_tolerance_deg', default_value='3.0'),
         DeclareLaunchArgument('turn_timeout_s', default_value='3.0'),
+
+        # --- 진단 모드 ---
+        # skip_light   신호등을 안 기다리고 카메라를 바로 주행 자세로
+        # hold_position 무슨 일이 있어도 바퀴를 안 돌린다
+        #
+        # 둘을 같이 켜면 '카메라는 주행 자세, 차는 정지, 인지는 full'
+        # 이 된다. 책상에서 TF/지연을 재는 조합이다.
+        #
+        # skip_light 만 켜면 차가 바로 출발한다. 책상에서는 반드시
+        # hold_position 도 같이 켤 것.
+        DeclareLaunchArgument('skip_light', default_value='false'),
+        DeclareLaunchArgument('hold_position', default_value='false'),
         DeclareLaunchArgument('green_h_min', default_value='40'),
         DeclareLaunchArgument('green_h_max', default_value='85'),
         DeclareLaunchArgument('green_s_min', default_value='80'),
@@ -460,6 +472,7 @@ def generate_launch_description():
             'drive_tilt_degrees': _f('tilt_degrees'),
             'settle_tolerance_deg': _f('settle_tolerance_deg'),
             'turn_timeout_s': _f('turn_timeout_s'),
+            'skip_light': _b('skip_light'),
         }],
     )
 
@@ -522,6 +535,7 @@ def generate_launch_description():
             'avoid_enabled': _b('avoid_enabled'),
             # 신호등 노드와 반드시 같은 값. 위 traffic_light 주석 참고.
             'wait_for_green': _b('traffic_light'),
+            'hold_position': _b('hold_position'),
             'cone_margin_m': _f('cone_margin_m'),
             'wall_margin_m': _f('wall_margin_m'),
             'max_offset_m': _f('max_offset_m'),

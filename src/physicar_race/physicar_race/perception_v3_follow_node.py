@@ -93,6 +93,13 @@ class PerceptionV3FollowNode(Node):
         # 영원히 안 움직인다. 런치가 traffic_light 인자와 묶어서 켠다.
         self.declare_parameter('wait_for_green', False)
 
+        # 진단용 정지 고정. 켜면 무슨 일이 있어도 바퀴가 안 돈다.
+        #
+        # 책상에서 TF/지연을 재려면 인지는 다 돌아야 하지만 차는 가만히
+        # 있어야 한다. 신호등을 끄는 것으로는 안 된다 -- 그러면 경로가
+        # 잡히는 순간 출발한다. 그래서 별도 스위치를 둔다.
+        self.declare_parameter('hold_position', False)
+
         # 속도: 횡가속 한계(v <= sqrt(a_lat_max * R))와 보이는 거리로 정한다.
         self.declare_parameter('v_max', 1.20)
         self.declare_parameter('v_min', 0.45)
@@ -144,6 +151,7 @@ class PerceptionV3FollowNode(Node):
         self._target_y = None
         self.steer_sign = float(p('steer_sign').value)
         self.wait_for_green = bool(p('wait_for_green').value)
+        self.hold_position = bool(p('hold_position').value)
         self._green_seen = not self.wait_for_green
         self.v_max = float(p('v_max').value)
         self.v_min = float(p('v_min').value)
@@ -381,6 +389,13 @@ class PerceptionV3FollowNode(Node):
 
     def tick(self):
         now = time.time()
+
+        # 진단용 정지 고정. 신호등 게이트보다도 먼저 막는다.
+        if self.hold_position:
+            self._publish(0.0, 0.0)
+            self.get_logger().info('정지 고정 (hold_position) -- 인지만 돈다',
+                                   throttle_duration_sec=5.0)
+            return
 
         # 신호등 게이트. 경로가 잘 보이든 말든 초록 전에는 안 나간다.
         # 조향도 0 으로 둔다 -- 정지 중에 바퀴를 꺾어두면 출발 첫 순간에
