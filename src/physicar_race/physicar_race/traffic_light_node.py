@@ -18,6 +18,7 @@
 주의: HSV 기본값은 placeholder다. 실제 신호등 조명/노출에서 재확인할 것.
 """
 
+import math
 import time
 
 import cv2
@@ -46,26 +47,48 @@ class TrafficLightNode(Node):
         # 빨강은 HSV 색상환에서 0도를 걸쳐 있어 두 구간으로 나눠 잡는다.
         self.declare_parameter('red_h_lo_max', 10)
         self.declare_parameter('red_h_hi_min', 170)
-        self.declare_parameter('green_h_min', 40)
-        self.declare_parameter('green_h_max', 90)
+        self.declare_parameter('green_h_min', 35)
+        self.declare_parameter('green_h_max', 95)
 
-        self.declare_parameter('sat_min', 120)
-        self.declare_parameter('val_min', 120)
+        # 켜진 LED 는 가운데가 센서를 포화시켜 **하얗게** 뜬다. 그 부분은
+        # 채도가 낮아서 sat_min 120 이면 통째로 걸러진다 -- 초록불인데
+        # 아무것도 못 보는 제일 흔한 이유다. 색은 보통 가장자리 띠에만
+        # 제대로 남으므로 기준을 낮추고, 대신 모양으로 거른다.
+        self.declare_parameter('sat_min', 70)
+        self.declare_parameter('val_min', 90)
+
+        # 포화된 흰 중심과 초록 띠가 따로 놀면 덩어리가 갈라진다.
+        # 살짝 부풀려 하나로 붙인다. 0 이면 안 한다.
+        self.declare_parameter('dilate_px', 2)
 
         # 이 픽셀 수 미만이면 노이즈로 보고 NONE 처리
         self.declare_parameter('min_blob_px', 60)
 
-        # 신호등은 **원**이다. 이걸 안 보면 초록 고깔이 신호로 읽힌다 --
-        # 고깔 HSV(40~85)가 여기 초록 구간(40~90)과 거의 겹친다. 출발선에서
-        # 고깔이 시야에 있으면 빨간불인데 출발해버린다.
+        # 신호등은 **원**이다. 색만 보면 초록 고깔이 신호로 읽힌다 --
+        # 고깔 HSV(40~85)가 여기 초록 구간과 거의 겹친다. 출발선에 고깔이
+        # 보이면 빨간불인데 출발해버린다.
         #
-        # 작은 덩어리(60 px)에서는 둘레 기반 원형도가 심하게 흔들려서,
-        # 외접 사각형으로 본다. 원이면 채움률이 pi/4 = 0.785, 가로세로비 1.
-        # 고깔은 삼각형이라 채움률 0.5 안팎이고 세로로 길다.
+        # 지표 셋을 같이 본다. 합성 도형으로 실측한 값이 근거다:
+        #
+        #   모양        외접채움  원형도  이심률
+        #   원          .84~.95   .83~.90  1.00
+        #   정사각형    .64       .79      1.00
+        #   정삼각형    .41       .55      .88~1.00
+        #   타원        .44~.50   .70~.77  .20~.26
+        #   고깔        .31~.34   .48      .25~.34
+        #
+        # 하나만 쓰면 안 되는 이유가 표에 다 있다:
+        #   원형도 단독  -> 정사각형 .79 가 원 .83 에 붙는다
+        #   이심률 단독  -> 정삼각형은 대칭이라 1.00 이 나온다. 못 거른다
+        #   외접채움     -> 제일 잘 가른다 (원 .84 vs 정사각형 .64)
+        #
+        # 그래서 외접채움을 주로 쓰고 나머지 둘로 받친다. 흐릿한 원(LED
+        # 번짐)은 계단 픽셀이 뭉개져 오히려 값이 좋아진다(.92~.94)라,
+        # 초점이 안 맞아도 안전하다.
         self.declare_parameter('require_circle', True)
-        self.declare_parameter('min_fill_ratio', 0.60)
-        self.declare_parameter('min_aspect', 0.60)
-        self.declare_parameter('max_aspect', 1.70)
+        self.declare_parameter('min_enclosing_fill', 0.72)   # A / (pi r^2)
+        self.declare_parameter('min_circularity', 0.70)      # 4 pi A / P^2
+        self.declare_parameter('min_eccentricity', 0.55)     # lambda_min / lambda_max
 
         self.declare_parameter('publish_debug', False)
 
@@ -88,9 +111,11 @@ class TrafficLightNode(Node):
 
         p = self.get_parameter
         self.require_circle = bool(p('require_circle').value)
-        self.min_fill_ratio = float(p('min_fill_ratio').value)
-        self.min_aspect = float(p('min_aspect').value)
-        self.max_aspect = float(p('max_aspect').value)
+        self.min_enclosing_fill = float(p('min_enclosing_fill').value)
+        self.min_circularity = float(p('min_circularity').value)
+        self.min_eccentricity = float(p('min_eccentricity').value)
+        self.dilate_px = int(p('dilate_px').value)
+        self._shape_stamp = 0.0
         self.roi_top_frac = float(p('roi_top_frac').value)
         self.roi_bottom_frac = float(p('roi_bottom_frac').value)
         self.red_h_lo_max = int(p('red_h_lo_max').value)
@@ -127,50 +152,88 @@ class TrafficLightNode(Node):
 
         self.get_logger().info('traffic_light_node 시작')
 
-    def _round_enough(self, width, height, area):
-        """외접 사각형으로 원인지 본다. 이유 문자열을 같이 돌려준다.
+    @staticmethod
+    def circle_metrics(contour):
+        """윤곽선이 얼마나 원에 가까운지 세 수치로 잰다. 원이면 셋 다 1.
 
-        둘레 기반 원형도(4*pi*A/P^2)는 60 px 짜리 덩어리에서 계단 픽셀
-        때문에 크게 흔들린다. 채움률과 가로세로비가 훨씬 안정적이다.
+        1. 외접원 채움률   A / (pi r^2)
+           최소외접원 안을 얼마나 채우는가. 제일 잘 가르는 지표다.
+           원 1.00, 정사각형 0.64, 정삼각형 0.41.
+
+        2. 원형도          4 pi A / P^2
+           같은 넓이에서 둘레가 가장 짧은 도형이 원이라는 등주부등식에서
+           나온다. 다만 픽셀 계단이 둘레를 부풀려서 작은 덩어리에서는
+           값이 내려간다. 그래서 보조로만 쓴다.
+
+        3. 이심률          lambda_min / lambda_max
+           2차 중심모멘트 행렬 [[mu20, mu11], [mu11, mu02]] 의 고유값 비.
+           길쭉할수록 0 에 가깝다. **정삼각형은 대칭이라 1 이 나오므로**
+           이것만으로는 삼각형을 못 거른다. 길쭉한 것 전용이다.
         """
+        area = float(cv2.contourArea(contour))
+        if area <= 0.0:
+            return 0.0, 0.0, 0.0
+        _, radius = cv2.minEnclosingCircle(contour)
+        fill = area / (math.pi * radius * radius) if radius > 0.0 else 0.0
+        perimeter = float(cv2.arcLength(contour, True))
+        circularity = (4.0 * math.pi * area / (perimeter * perimeter)
+                       if perimeter > 0.0 else 0.0)
+        m = cv2.moments(contour)
+        if m['m00'] <= 0.0:
+            return fill, circularity, 0.0
+        mu20, mu02 = m['mu20'] / m['m00'], m['mu02'] / m['m00']
+        mu11 = m['mu11'] / m['m00']
+        spread = math.sqrt(max(0.0, (mu20 - mu02) ** 2 + 4.0 * mu11 * mu11))
+        big, small = (mu20 + mu02 + spread) / 2.0, (mu20 + mu02 - spread) / 2.0
+        eccentricity = small / big if big > 0.0 else 0.0
+        return fill, circularity, eccentricity
+
+    def _is_circle(self, contour):
+        """(원인가, 잰 값 문자열) 을 돌려준다."""
+        fill, circularity, eccentricity = self.circle_metrics(contour)
+        text = ('채움 %.2f 원형도 %.2f 이심률 %.2f'
+                % (fill, circularity, eccentricity))
         if not self.require_circle:
-            return True, ''
-        if width <= 0 or height <= 0:
-            return False, '크기0'
-        aspect = width / float(height)
-        fill = area / float(width * height)
-        if not (self.min_aspect <= aspect <= self.max_aspect):
-            return False, '가로세로비 %.2f' % aspect
-        if fill < self.min_fill_ratio:
-            return False, '채움률 %.2f' % fill
-        return True, ''
+            return True, text
+        return (fill >= self.min_enclosing_fill
+                and circularity >= self.min_circularity
+                and eccentricity >= self.min_eccentricity), text
 
-    def _largest_blob_px(self, mask):
-        """가장 큰 **원형** 연결 성분의 픽셀 수.
+    def _largest_blob_px(self, mask, label=''):
+        """가장 큰 **원형** 덩어리의 픽셀 수.
 
-        면적 총합이 아니라 최대 덩어리를 쓰는 이유는 색 번짐/반사에
-        강하기 때문이다. 거기에 모양 검사를 더해, 초록 고깔이 초록불로
-        읽히는 것을 막는다.
+        못 찾았을 때 왜 못 찾았는지가 로그에 남게 한다. 색이 아예 안
+        잡히는 것과, 색은 잡혔는데 원이 아닌 것은 고칠 곳이 다르다.
         """
-        n, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-        if n <= 1:
-            return 0
-        best = 0
-        rejects = []
-        for i in range(1, n):
-            area = int(stats[i, cv2.CC_STAT_AREA])
-            if area <= best:
+        if self.dilate_px > 0:
+            # 포화된 흰 중심과 초록 띠를 하나로 붙인다.
+            size = 2 * self.dilate_px + 1
+            mask = cv2.dilate(mask, np.ones((size, size), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_NONE)
+        best, notes = 0, []
+        for contour in contours:
+            area = int(cv2.contourArea(contour))
+            if area < self.min_blob_px or area <= best:
                 continue
-            ok, why = self._round_enough(int(stats[i, cv2.CC_STAT_WIDTH]),
-                                         int(stats[i, cv2.CC_STAT_HEIGHT]), area)
+            ok, text = self._is_circle(contour)
             if ok:
                 best = area
-            elif area >= self.min_blob_px:
-                rejects.append('%dpx(%s)' % (area, why))
-        if rejects and not best:
-            self.get_logger().info(
-                '원이 아니라 버림: %s' % ', '.join(rejects[:3]),
-                throttle_duration_sec=2.0)
+            else:
+                notes.append('%dpx %s' % (area, text))
+        if label and (best or notes):
+            now = time.time()
+            if now - self._shape_stamp >= 1.0:
+                self._shape_stamp = now
+                if best:
+                    self.get_logger().info('%s 원 검출 %dpx' % (label, best))
+                else:
+                    self.get_logger().info(
+                        '%s 색은 잡혔는데 원이 아니다 (기준 채움>=%.2f '
+                        '원형도>=%.2f 이심률>=%.2f): %s'
+                        % (label, self.min_enclosing_fill,
+                           self.min_circularity, self.min_eccentricity,
+                           ', '.join(notes[:3])))
         return best
 
     def _hue_blobs(self, hsv, ranges, s_min, v_min):
@@ -307,10 +370,22 @@ class TrafficLightNode(Node):
         green = cv2.morphologyEx(green, cv2.MORPH_OPEN, k)
 
         red_px = self._largest_blob_px(red)
-        green_px = self._largest_blob_px(green)
+        green_px = self._largest_blob_px(green, '초록')
 
         if max(red_px, green_px) < self.min_blob_px:
             state = STATE_NONE
+            # 아무것도 못 봤을 때, 색이 아예 안 잡힌 건지 색은 잡혔는데
+            # 모양에서 떨어진 건지 갈라서 알려준다. 고칠 곳이 다르다.
+            # (모양에서 떨어진 경우는 _largest_blob_px 가 이미 찍는다.)
+            if int(np.count_nonzero(green)) < self.min_blob_px:
+                self.get_logger().info(
+                    '초록 화소가 거의 없다 (%d개 < %d). HSV 를 넓혀야 한다 '
+                    '-- 지금 H %d~%d, S>=%d, V>=%d. traffic_probe:=true 로 '
+                    '실측값을 보라.'
+                    % (int(np.count_nonzero(green)), self.min_blob_px,
+                       self.green_h_min, self.green_h_max,
+                       self.sat_min, self.val_min),
+                    throttle_duration_sec=2.0)
         elif red_px >= green_px:
             state = STATE_RED
         else:

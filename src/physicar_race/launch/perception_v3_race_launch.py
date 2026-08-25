@@ -197,13 +197,21 @@ def generate_launch_description():
         DeclareLaunchArgument('traffic_light', default_value='true'),
         # 신호등은 화면 위쪽에 있다. 출발선에 세워놓고 debug_view 로 보면서 맞춘다.
         DeclareLaunchArgument('traffic_roi_bottom', default_value='0.55'),
-        DeclareLaunchArgument('traffic_green_h_min', default_value='40'),
-        DeclareLaunchArgument('traffic_green_h_max', default_value='90'),
-        DeclareLaunchArgument('traffic_sat_min', default_value='120'),
-        DeclareLaunchArgument('traffic_val_min', default_value='120'),
+        DeclareLaunchArgument('traffic_green_h_min', default_value='35'),
+        DeclareLaunchArgument('traffic_green_h_max', default_value='95'),
+        # 켜진 LED 는 가운데가 포화돼 하얗게 뜬다. 채도 기준이 높으면
+        # 초록불인데 아무것도 못 본다. 색은 넉넉히 잡고 모양으로 거른다.
+        DeclareLaunchArgument('traffic_sat_min', default_value='70'),
+        DeclareLaunchArgument('traffic_val_min', default_value='90'),
         DeclareLaunchArgument('traffic_min_blob_px', default_value='60'),
-        # 초록 고깔(HSV 40~85)이 초록불로 읽히는 것을 막는 모양 검사.
+        # 포화된 흰 중심과 초록 띠가 갈라지면 붙여준다.
+        DeclareLaunchArgument('traffic_dilate_px', default_value='2'),
+        # 초록 고깔이 초록불로 읽히는 것을 막는 모양 검사. 실측 근거는
+        # traffic_light_node 의 주석 표에 있다.
         DeclareLaunchArgument('traffic_require_circle', default_value='true'),
+        DeclareLaunchArgument('traffic_min_fill', default_value='0.72'),
+        DeclareLaunchArgument('traffic_min_circularity', default_value='0.70'),
+        DeclareLaunchArgument('traffic_min_eccentricity', default_value='0.55'),
         # 검출이 안 되면 켠다. 화면의 실측 H/S/V 를 로그로 뽑아준다.
         DeclareLaunchArgument('traffic_probe', default_value='false'),
 
@@ -357,7 +365,11 @@ def generate_launch_description():
             'sat_min': _i('traffic_sat_min'),
             'val_min': _i('traffic_val_min'),
             'min_blob_px': _i('traffic_min_blob_px'),
+            'dilate_px': _i('traffic_dilate_px'),
             'require_circle': _b('traffic_require_circle'),
+            'min_enclosing_fill': _f('traffic_min_fill'),
+            'min_circularity': _f('traffic_min_circularity'),
+            'min_eccentricity': _f('traffic_min_eccentricity'),
             'debug_probe': _b('traffic_probe'),
             'publish_debug': _b('debug_view'),
         }],

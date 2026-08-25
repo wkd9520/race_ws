@@ -73,42 +73,79 @@ def borrow(source, names, extra=None):
 # ============================================================ 초록 원 검출
 
 print('\n[1] 초록 고깔을 초록불로 읽지 않는가 ★')
-# 고깔 HSV(40~85)와 신호등 초록(40~90)이 거의 겹친다. 모양으로 가른다.
-shape_ns = borrow(light_src, {'_round_enough'})
+# 고깔 HSV(40~85)와 신호등 초록(35~95)이 겹친다. 모양으로 가른다.
+#
+# 지표 하나로는 안 된다. 아래 검사가 그 근거이고, 노드의 임계값도
+# 합성 도형 실측에서 나왔다.
+metrics = borrow(light_src, {'circle_metrics'},
+                 {'cv2': cv2, 'math': math, 'np': np})['circle_metrics']
+
+MIN_FILL, MIN_CIRC, MIN_ECC = 0.72, 0.70, 0.55
 
 
-class Shape:
-    def __init__(self, require=True, fill=0.60, lo=0.60, hi=1.70):
-        self.require_circle, self.min_fill_ratio = require, fill
-        self.min_aspect, self.max_aspect = lo, hi
-    _round_enough = shape_ns['_round_enough']
-
-
-def blob(kind, size=20):
-    pad = size // 2
-    img = np.zeros((size * 2 + pad, size * 2 + pad), np.uint8)
-    cx, cy = img.shape[1] // 2, img.shape[0] // 2
-    if kind == 'circle':
+def shape(kind, size, blur=0):
+    img = np.zeros((size * 3, size * 3), np.uint8)
+    cx = cy = size * 3 // 2
+    if kind == '원':
         cv2.circle(img, (cx, cy), size // 2, 255, -1)
-    else:
+    elif kind == '고깔':
         cv2.fillPoly(img, [np.array(
             [[cx, cy - size // 2], [cx - size // 3, cy + size // 2],
              [cx + size // 3, cy + size // 2]], np.int32)], 255)
-    n, _, stats, _ = cv2.connectedComponentsWithStats(img, connectivity=8)
-    i = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    return (int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT]),
-            int(stats[i, cv2.CC_STAT_AREA]))
+    elif kind == '정삼각형':
+        cv2.fillPoly(img, [np.array(
+            [[cx, cy - size // 2], [cx - int(size * .43), cy + size // 4],
+             [cx + int(size * .43), cy + size // 4]], np.int32)], 255)
+    elif kind == '정사각형':
+        cv2.rectangle(img, (cx - size // 3, cy - size // 3),
+                      (cx + size // 3, cy + size // 3), 255, -1)
+    elif kind == '타원':
+        cv2.ellipse(img, (cx, cy), (size // 2, size // 4), 0, 0, 360, 255, -1)
+    elif kind == '반달':
+        cv2.circle(img, (cx, cy), size // 2, 255, -1)
+        img[:cy, :] = 0
+    if blur:
+        img = cv2.GaussianBlur(img, (blur, blur), 0)
+        img = (img > 90).astype(np.uint8) * 255
+    contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_NONE)
+    return max(contours, key=cv2.contourArea)
 
 
-for kind, want in (('circle', True), ('cone', False)):
-    w, h, area = blob(kind)
-    ok, why = Shape._round_enough(Shape(), w, h, area)
-    check('원은 통과한다' if want else '고깔은 걸러낸다 ★', ok == want,
-          '(%dx%d 채움 %.2f%s)'
-          % (w, h, area / float(w * h), '' if ok else ' -> ' + why))
-w, h, area = blob('cone')
-check('require_circle=False 로 되돌릴 수 있다',
-      Shape._round_enough(Shape(require=False), w, h, area)[0])
+def is_circle(contour):
+    fill, circ, ecc = metrics(contour)
+    return (fill >= MIN_FILL and circ >= MIN_CIRC and ecc >= MIN_ECC,
+            '채움 %.2f 원형도 %.2f 이심률 %.2f' % (fill, circ, ecc))
+
+
+for kind, want in (('원', True), ('고깔', False), ('정삼각형', False),
+                   ('정사각형', False), ('타원', False), ('반달', False)):
+    results = [is_circle(shape(kind, size)) for size in (14, 24, 40)]
+    ok = all(r[0] == want for r in results)
+    check('%s%s' % (kind, ' 은 통과한다' if want else ' 은 걸러낸다 ★'), ok,
+          '(%s)' % results[0][1])
+
+# LED 번짐. 계단 픽셀이 뭉개져서 오히려 값이 좋아진다.
+check('초점이 안 맞은 원도 통과한다 ★',
+      all(is_circle(shape('원', 24, blur=b))[0] for b in (3, 5, 9)))
+
+# 지표 하나만 쓰면 왜 안 되는지를 못으로 박는다.
+sq_fill, sq_circ, sq_ecc = metrics(shape('정사각형', 24))
+tri_fill, tri_circ, tri_ecc = metrics(shape('정삼각형', 24))
+check('  원형도만으로는 정사각형을 못 거른다 (그래서 셋을 본다)',
+      sq_circ >= MIN_CIRC, '(정사각형 원형도 %.2f)' % sq_circ)
+check('  이심률만으로는 정삼각형을 못 거른다 (대칭이라 1에 가깝다)',
+      tri_ecc >= MIN_ECC, '(정삼각형 이심률 %.2f)' % tri_ecc)
+check('  외접채움이 둘 다 잡아낸다 ★',
+      sq_fill < MIN_FILL and tri_fill < MIN_FILL,
+      '(정사각형 %.2f, 정삼각형 %.2f)' % (sq_fill, tri_fill))
+
+check('require_circle 로 모양 검사를 끌 수 있다',
+      'if not self.require_circle' in light_src)
+check('색이 아예 안 잡히면 HSV 문제라고 알려준다',
+      '초록 화소가 거의 없다' in light_src)
+check('색은 잡혔는데 원이 아니면 잰 값을 찍어준다',
+      '색은 잡혔는데 원이 아니다' in light_src)
 
 
 # ============================================================ 출발 상태기계
