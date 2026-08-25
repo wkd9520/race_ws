@@ -102,7 +102,14 @@ def _i(name):
 
 def generate_launch_description():
     args = [
-        DeclareLaunchArgument('use_sim_time', default_value='true'),
+        # 실차가 기본이다. use_sim_time=true 면 노드가 /clock 토픽을
+        # 시계로 쓰는데, 실차에는 /clock 이 없다. 그러면 노드의 시각이
+        # 0 에 멈추거나 메시지 스탬프와 어긋난다 -- 정확한 시각의 TF 를
+        # 찾는 인지에는 치명적이다.
+        #
+        # 원래 true 였던 건 로스백 재생 때문이었다. 로스백을 --clock 으로
+        # 틀 때만 use_sim_time:=true 를 붙인다.
+        DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('camera_topic', default_value='/camera/image_raw'),
 
         # --- TF 대기 큐 ---
