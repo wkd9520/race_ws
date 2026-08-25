@@ -224,8 +224,16 @@ if len(grids) == 3:
 
 for key in ('bev_x_min', 'bev_x_max', 'bev_y_min', 'bev_y_max',
             'bev_resolution', 'pitch_offset_deg',
-            'camera_height_correction_z'):
-    check('  %s 인자가 있다' % key, key in args, '(기본 %s)' % args.get(key))
+            'camera_height_correction_z', 'camera_k'):
+    check('  %s 인자가 있다' % key, key in args)
+
+# camera_info 가 껍데기라 yaml/인자가 유일한 진실이다. 기본값이 원본
+# yaml 과 어긋나면 조용히 다른 카메라로 계산하게 된다.
+k = args.get('camera_k', '')
+check('  camera_k 기본값이 원본 yaml 과 같다 ★',
+      '201.38988018035889' in k and '201.38988733291626' in k
+      and '240.0' in k and '180.0' in k,
+      '(%s)' % k)
 
 
 print('\n[4] 카메라 틸트를 이 launch 가 건드리지 않는가')

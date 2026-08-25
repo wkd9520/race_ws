@@ -61,6 +61,7 @@ from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from typing import List
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -104,6 +105,17 @@ def generate_launch_description():
         DeclareLaunchArgument('pitch_offset_deg', default_value='2.8'),
         DeclareLaunchArgument('camera_height_correction_z',
                               default_value='-0.018'),
+
+        # 카메라 내부 파라미터. camera_info 가 껍데기(전부 0)라 yaml 이
+        # 유일한 진실이고, 이 값은 MinSeok 님 시뮬레이터 카메라 기준이다.
+        #   [fx, 0, cx,  0, fy, cy,  0, 0, 1]
+        # fx=201.4 는 수평 화각 100도라는 뜻 -- 실물 렌즈가 좁으면 더 커야 한다.
+        # 바닥 체커보드가 BEV 에서 정사각형이 되는 값이 정답이다.
+        DeclareLaunchArgument(
+            'camera_k',
+            default_value='[201.38988018035889, 0.0, 240.0,'
+                           ' 0.0, 201.38988733291626, 180.0,'
+                           ' 0.0, 0.0, 1.0]'),
 
         # --- 우리 컨트롤러 ---
         DeclareLaunchArgument('control_hz', default_value='30.0'),
@@ -167,6 +179,8 @@ def generate_launch_description():
             'projection.pitch_offset_deg': _f('pitch_offset_deg'),
             'sim_geometry.camera_height_correction_z':
                 _f('camera_height_correction_z'),
+            'camera.K': ParameterValue(LaunchConfiguration('camera_k'),
+                                       value_type=List[float]),
         }],
         remappings=[('/camera/image_raw', LaunchConfiguration('camera_topic')),
                     ('/joint_states',
