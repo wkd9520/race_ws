@@ -253,9 +253,12 @@ def generate_launch_description():
                      LaunchConfiguration('joint_states_topic'))],
     )
 
+    # 회피를 안 쓰면 띄우지 않는다. 이미지 두 개를 받아 HSV + 연결요소를
+    # 매 프레임 도는 노드라, 결과를 안 쓸 거면 CPU 만 먹는다.
     cones = Node(
         package=PKG, executable='cone_bev_node', name='cone_bev_node',
         output='screen',
+        condition=IfCondition(LaunchConfiguration('avoid_enabled')),
         parameters=[{
             # perception_v3 와 같은 인자를 쓴다. 손으로 두 벌 적으면
             # 언젠가 어긋나고, 그러면 고깔 좌표가 통째로 틀어진다.

@@ -336,6 +336,11 @@ if cone:
 check('  cone_bev_node 의 디버그 이미지도 같이 꺼진다 ★',
       getattr(getattr(cone_dbg, 'value', None), 'name', None) == 'debug_view')
 
+# 라즈베리파이 5 에서 인지가 카메라를 못 따라가는 문제를 겪었다.
+# 회피를 안 쓸 때 이 노드가 이미지 두 개를 계속 처리하는 건 순수 낭비다.
+check('  회피를 끄면 cone_bev_node 자체를 안 띄운다 ★',
+      cone is not None and cone.kw.get('condition') is not None)
+
 
 print('\n[6] 실차에서 자주 바꾸는 값이 인자로 나와 있는가')
 for key in ('v_max', 'a_lat_max', 'steer_sign', 'ld_k',
