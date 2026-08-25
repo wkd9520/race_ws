@@ -1390,13 +1390,26 @@ class V3Node(Node):
         """
         stamp=Time.from_msg(msg.header.stamp)
         latest_ok=bool(self.get_parameter('tf_wait.allow_latest').value)
-        ready,_=self.tfbuf.can_transform('base_footprint','camera_optical_frame_corrected',stamp,timeout=Duration(seconds=0.0),return_debug_tuple=True)
+        ready,reason=self.tfbuf.can_transform('base_footprint','camera_optical_frame_corrected',stamp,timeout=Duration(seconds=0.0),return_debug_tuple=True)
         if not ready and latest_ok:
             zero=Time()
             if self.tfbuf.can_transform('base_footprint','camera_optical_frame_corrected',zero,timeout=Duration(seconds=0.0)):
                 self.stats['tf_latest_used'] = self.stats.get('tf_latest_used',0)+1
                 return self.tfbuf.lookup_transform('base_footprint','camera_optical_frame_corrected',zero,timeout=Duration(seconds=0.0))
-        if not ready: raise RuntimeError('exact_tf_not_ready')
+        if not ready:
+            # tf2 가 왜 안 된다고 하는지를 그대로 찍는다. 추측하지 않기
+            # 위해서다. "extrapolation into the future" 면 TF 가 아직 안 온
+            # 것이고, "past" 면 너무 늦게 온 것이고, 프레임 이름이 나오면
+            # 아예 다른 문제다. 셋의 고칠 곳이 전부 다르다.
+            self.get_logger().warn(
+                'TF 대기 이유: %s  (이미지 %.3f, 지금 %.3f, 차이 %.3f초)'
+                % (str(reason).strip() or '(이유 없음)',
+                   stamp.nanoseconds / 1e9,
+                   self.get_clock().now().nanoseconds / 1e9,
+                   (self.get_clock().now().nanoseconds
+                    - stamp.nanoseconds) / 1e9),
+                throttle_duration_sec=2.0)
+            raise RuntimeError('exact_tf_not_ready')
         if bool(self.get_parameter('center_history.enabled').value):
             fixed=str(self.get_parameter('lidar.fixed_frame').value)
             odom_ready,_=self.tfbuf.can_transform(
