@@ -5,6 +5,7 @@ MinSeok 님 launch 를 include 하고 노드 넷에 외부 프로세스까지 �
 조용히 빠지면 "왜 안 뜨지" 로만 드러난다. 구조를 여기서 굳혀둔다.
 """
 import importlib.util
+import math
 import os
 import sys
 import types
@@ -270,13 +271,35 @@ check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
 
 # 라즈베리파이 5 가 카메라를 못 따라가서 줄였다. 인지 비용은 BEV 픽셀
 # 수에 거의 비례한다(연결요소마다 픽셀 BFS). 28,500 -> 2,500 px.
+# --- x_max 는 취향이 아니라 계산으로 정한다 ---
+# 카메라가 낮으면(0.148 m) 먼 지면일수록 한 이미지 행이 덮는 지면이
+# 거리^2 / (fy*h) 로 커진다. 그 값이 BEV 격자의 두 배를 넘으면 BEV 는
+# 없는 정보를 늘려 그리는 것이고, 그 얼룩은 가짜 연결요소로 잡혀
+# comp 수와 extract 시간을 늘리고 경로에 헛점을 넣는다.
+#
+# 틸트로는 못 고친다 -- 틸트는 지면이 화면 어디에 찍히는지만 바꾼다.
+# 카메라를 물리적으로 올리면 그때 이 테스트가 새 한계를 알려준다.
+CAMERA_HEIGHT_M = 0.148       # tf2_echo base_footprint -> camera 실측
+FY = 260.875                  # perception_v3_real.yaml 의 camera.K
+usable_m = math.sqrt(2.0 * float(args['bev_resolution']) * FY * CAMERA_HEIGHT_M)
+check('x_max 가 카메라가 실제로 분해할 수 있는 거리 안에 있다 ★',
+      float(args['bev_x_max']) <= usable_m + 1e-9,
+      '(x_max %.2f m <= 한계 %.2f m)' % (float(args['bev_x_max']), usable_m))
+# 전방주시점이 경로 끝보다 멀면 늘 마지막 점을 쓰게 되고, 그러면
+# 속도가 붙어도 전방주시거리가 안 늘어난다.
+check('  전방주시 상한이 경로 길이 안에 든다',
+      float(args['ld_max_m']) <= float(args['bev_x_max']) + 1e-9,
+      '(ld_max %.2f <= x_max %.2f)'
+      % (float(args['ld_max_m']), float(args['bev_x_max'])))
+
 # 해상도는 0.01 로 못 박는다. 0.02 로 올리면 흰선(2~3 cm)이 BEV 에서
 # 1 픽셀이 되고, 마스킹이 투영 *뒤에* 돌기 때문에(bev_frontend_node.py:1452)
 # 보간에서 아스팔트와 섞여 임계값을 못 넘는다 -- 선이 통째로 사라진다.
 # 실차에서 조향이 완전히 죽었다. 줄이는 건 범위로만 한다.
-check('해상도는 0.01 이고 범위만 줄었다 ★',
+# x_max 는 위에서 물리로 검사한다. 여기서는 해상도만 못 박는다 --
+# 줄이는 건 언제나 범위로만 한다.
+check('해상도는 0.01 이다 (범위로만 줄인다) ★',
       args.get('bev_resolution') == '0.01'
-      and args.get('bev_x_max') == '1.20'
       and args.get('bev_y_max') == '0.70',
       '(%s m/px, x~%s, y±%s)' % (args.get('bev_resolution'),
                                  args.get('bev_x_max'), args.get('bev_y_max')))

@@ -128,8 +128,41 @@ def generate_launch_description():
         # y ±0.70 인 이유: track_half_m 0.37 + max_offset_m 0.30 = 0.67.
         # 고깔을 피해 붙는 순간 반대편 흰선(넘으면 실격)이 격자 밖으로
         # 나가면 안 된다.
-        DeclareLaunchArgument('bev_x_min', default_value='0.20'),
-        DeclareLaunchArgument('bev_x_max', default_value='1.20'),
+        # x_max 를 0.87 로 자른 이유. 튜닝이 아니라 계산이다.
+        #
+        # 카메라가 0.148 m 높이에 있으면, 먼 지면일수록 한 이미지 행이
+        # 덮는 지면이 급격히 넓어진다 (거리^2 / (fy * h)):
+        #
+        #     거리    한 행이 덮는 지면
+        #     0.5 m   0.7 cm    격자 1cm 보다 촘촘. 선명하다
+        #     0.9 m   1.9 cm    경계
+        #     1.1 m   2.7 cm    격자 세 칸을 한 행으로 채운다
+        #     1.2 m   3.2 cm    뭉갠다
+        #
+        # 1.2 로 두면 위쪽 0.3 m 를 이미지 서너 행으로 늘려 그린다.
+        # 흐린 게 아니라 **거기엔 정보가 없다.** 그 구간은 보기만 나쁜 게
+        # 아니라 해롭다 -- 늘어난 얼룩이 가짜 연결요소로 잡혀서 comp 수를
+        # 늘리고, extract 시간을 먹고, 경로에 헛점을 넣는다.
+        #
+        # 한계 거리 = sqrt(0.02 * fy * h) = sqrt(0.02*260.875*0.148) = 0.88 m
+        #
+        # **틸트로는 못 고친다.** -30/-20/-12.5 도에서 한계가 0.93/0.88/0.87
+        # 로 거의 같다. 틸트는 지면이 화면 어디에 찍히는지만 바꾼다.
+        # 유일한 지렛대는 카메라 높이다:
+        #
+        #     0.148 m -> 0.88 m      0.25 m -> 1.14 m
+        #     0.20  m -> 1.02 m      0.30 m -> 1.25 m
+        #
+        # 카메라를 물리적으로 올리면 그때 x_max 를 같이 올린다.
+        #
+        # x_min 0.15: 화면 맨 아래가 0.065 m 까지 본다. 근거리는 해상도가
+        # 제일 좋은 구간이라 넉넉히 받는다.
+        #
+        # ld_max_m 도 0.90 -> 0.85 로 같이 내렸다. 전방주시점이 경로 끝보다
+        # 멀면 늘 마지막 점을 쓰게 되고, 그러면 속도가 붙어도 전방주시거리가
+        # 안 늘어난다 -- 조향이 속도를 못 따라간다.
+        DeclareLaunchArgument('bev_x_min', default_value='0.15'),
+        DeclareLaunchArgument('bev_x_max', default_value='0.87'),
         DeclareLaunchArgument('bev_y_min', default_value='-0.70'),
         DeclareLaunchArgument('bev_y_max', default_value='0.70'),
         DeclareLaunchArgument('bev_resolution', default_value='0.01'),
@@ -177,7 +210,7 @@ def generate_launch_description():
         # --- 우리 컨트롤러 ---
         DeclareLaunchArgument('control_hz', default_value='30.0'),
         DeclareLaunchArgument('ld_min_m', default_value='0.35'),
-        DeclareLaunchArgument('ld_max_m', default_value='0.90'),
+        DeclareLaunchArgument('ld_max_m', default_value='0.85'),
         DeclareLaunchArgument('ld_k', default_value='0.90'),
         DeclareLaunchArgument('steer_sign', default_value='1.0'),
         DeclareLaunchArgument('v_max', default_value='1.20'),
