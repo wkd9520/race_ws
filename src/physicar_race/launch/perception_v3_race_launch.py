@@ -107,14 +107,21 @@ def generate_launch_description():
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
         # --- BEV 격자: 세 노드가 이 값을 같이 쓴다 ---
-        # 기본값은 MinSeok 님 perception_v3_real.yaml 과 같게 둔다.
-        # 그 설정으로 실차에서 깔끔한 BEV 가 나온 것이 확인됐으므로,
-        # 우리가 임의로 좁히지 않는다. 번지면 그때 x_max 를 줄인다.
-        DeclareLaunchArgument('bev_x_min', default_value='0.10'),
-        DeclareLaunchArgument('bev_x_max', default_value='2.00'),
-        DeclareLaunchArgument('bev_y_min', default_value='-0.75'),
-        DeclareLaunchArgument('bev_y_max', default_value='0.75'),
-        DeclareLaunchArgument('bev_resolution', default_value='0.01'),
+        # 라즈베리파이 5 에서 인지가 카메라를 못 따라갔다. 인지 비용은
+        # BEV 픽셀 수에 거의 비례한다(연결요소마다 픽셀 BFS 를 돈다).
+        #
+        #   실차 yaml  0.01 m/px, x 0.1~2.0, y ±0.75  ->  150 x 190 = 28,500
+        #   지금       0.02 m/px, x 0.2~1.2, y ±0.50  ->   50 x  50 =  2,500
+        #
+        # 약 1/11 이다. 잃는 것은 2 cm 양자화뿐이고, 트랙 폭 0.70 m 와
+        # 고깔 0.10 m 를 보는 데는 충분하다. 거리도 1.2 m 면 넉넉하다 --
+        # 전방주시점이 최대 1.08 m 이고, 그보다 먼 곳은 카메라가 낮아서
+        # 어차피 뭉갠다.
+        DeclareLaunchArgument('bev_x_min', default_value='0.20'),
+        DeclareLaunchArgument('bev_x_max', default_value='1.20'),
+        DeclareLaunchArgument('bev_y_min', default_value='-0.50'),
+        DeclareLaunchArgument('bev_y_max', default_value='0.50'),
+        DeclareLaunchArgument('bev_resolution', default_value='0.02'),
 
         # --- 투영 보정 ---
         # 실차 yaml 은 둘 다 0 이다("실물 URDF/TF 를 그대로 믿는다").

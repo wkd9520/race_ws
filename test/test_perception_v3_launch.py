@@ -243,9 +243,19 @@ d = args.get('camera_d', '')
 check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
       '0.045' not in d and d.count('0.0') >= 5, '(%s)' % d)
 
-check('격자 기본값이 실차 yaml 과 같다',
-      args.get('bev_x_min') == '0.10' and args.get('bev_x_max') == '2.00'
-      and args.get('bev_y_min') == '-0.75' and args.get('bev_y_max') == '0.75')
+# 라즈베리파이 5 가 카메라를 못 따라가서 줄였다. 인지 비용은 BEV 픽셀
+# 수에 거의 비례한다(연결요소마다 픽셀 BFS). 28,500 -> 2,500 px.
+check('격자가 라즈베리파이용으로 줄어 있다 ★',
+      args.get('bev_resolution') == '0.02'
+      and args.get('bev_x_max') == '1.20'
+      and args.get('bev_y_max') == '0.50',
+      '(%s m/px, x~%s, y±%s)' % (args.get('bev_resolution'),
+                                 args.get('bev_x_max'), args.get('bev_y_max')))
+px = ((float(args['bev_x_max']) - float(args['bev_x_min']))
+      / float(args['bev_resolution'])
+      * (float(args['bev_y_max']) - float(args['bev_y_min']))
+      / float(args['bev_resolution']))
+check('  BEV 픽셀 수가 5000 이하', px <= 5000, '(%.0f px)' % px)
 # 높이 보정은 실차 yaml 그대로 0. 피치는 우리 차에서 실측한 3.0 이다
 # (0/6/12.5 비교). 실차 yaml 의 0 과 다른 유일한 값이라 여기 고정해둔다.
 check('피치가 실측값 3.0 으로 고정돼 있다 ★',

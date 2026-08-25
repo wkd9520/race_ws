@@ -181,41 +181,67 @@ class CanonicalComponentExtractor:
         return ''
 
     def _ordered_geodesic_polyline(self, rows, cols):
-        pixels = {(int(row), int(col)) for row, col in zip(rows, cols)}
+        """컴포넌트의 지름(가장 먼 두 점)을 잇는 경로를 픽셀 순서대로 낸다.
+
+        BFS 두 번으로 지름을 찾는 표준 방법이다. 알고리즘은 그대로 두고
+        파이썬 오버헤드만 걷어냈다 -- 라즈베리파이 5 에서 이 함수가 인지
+        전체의 병목이었다. 결과는 원본과 **완전히 같다**(테스트로 고정).
+
+        걷어낸 것 셋:
+
+        1. 픽셀마다 부르던 sorted() 를 없앴다. 이웃 8개를 (dr, dc) 순서로
+           나열하면 (row+dr, col+dc) 튜플도 이미 오름차순이라, 그 sorted()
+           는 아무 일도 안 하고 있었다.
+        2. (row, col) 튜플 대신 정수 하나로 눌러 담는다. 정수 해시가 튜플
+           해시보다 훨씬 싸고, 행 우선이라 정수 크기 비교가 튜플 비교와
+           순서가 같다 -- min()/max() 결과가 안 바뀐다.
+        3. 좌우 가장자리에 빈 열을 한 칸씩 둬서(stride = width + 2) 열
+           경계 검사를 없앴다. 넘어간 이웃은 항상 빈 칸이라 저절로 걸린다.
+        """
+        rows = np.asarray(rows, dtype=np.int64)
+        cols = np.asarray(cols, dtype=np.int64)
+        if rows.size < 2:
+            return np.empty((0, 2), dtype=np.float64)
+
+        stride = int(self.grid.width) + 2
+        pixels = set((rows + 1) * stride + (cols + 1))
         if len(pixels) < 2:
             return np.empty((0, 2), dtype=np.float64)
+
+        # (dr, dc) 오름차순 그대로. 원본 sorted() 와 같은 순서를 유지한다.
+        offsets = (-stride - 1, -stride, -stride + 1,
+                   -1, 1,
+                   stride - 1, stride, stride + 1)
 
         def farthest(start, with_parent=False):
             queue = [start]
             distance = {start: 0}
             parent = {} if with_parent else None
             for current in queue:
-                row, col = current
-                neighbours = sorted(
-                    (row + dr, col + dc)
-                    for dr in (-1, 0, 1) for dc in (-1, 0, 1)
-                    if (dr or dc) and (row + dr, col + dc) in pixels
-                )
-                for neighbour in neighbours:
-                    if neighbour in distance:
+                nd = distance[current] + 1
+                for off in offsets:
+                    neighbour = current + off
+                    if neighbour not in pixels or neighbour in distance:
                         continue
-                    distance[neighbour] = distance[current] + 1
+                    distance[neighbour] = nd
                     if parent is not None:
                         parent[neighbour] = current
                     queue.append(neighbour)
             maximum = max(distance.values())
-            endpoint = min(point for point, value in distance.items() if value == maximum)
+            endpoint = min(k for k, v in distance.items() if v == maximum)
             return endpoint, parent
 
-        seed = min(pixels)
-        first, _ = farthest(seed)
+        first, _ = farthest(min(pixels))
         second, parent = farthest(first, with_parent=True)
         path = [second]
         while path[-1] != first:
             path.append(parent[path[-1]])
         path.reverse()
-        path = np.asarray(path, dtype=np.int32)
-        x, y = self.grid.pixel_to_metric(path[:, 1], path[:, 0])
+
+        keys = np.asarray(path, dtype=np.int64)
+        path_rows = keys // stride - 1
+        path_cols = keys % stride - 1
+        x, y = self.grid.pixel_to_metric(path_cols, path_rows)
         return self._orient_near_to_far(np.column_stack((x, y)))
 
     @staticmethod
