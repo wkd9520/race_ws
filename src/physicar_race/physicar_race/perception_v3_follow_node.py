@@ -46,6 +46,34 @@ class PerceptionV3FollowNode(Node):
         self.declare_parameter('ld_min_m', 0.35)
         self.declare_parameter('ld_max_m', 1.30)
         self.declare_parameter('ld_k', 0.90)
+        # 코너에서 전방주시거리를 줄인다.
+        #
+        # 순수추종은 목표점까지 **원호 하나**로 간다. 그래서 목표점을 멀리
+        # 잡으면 코너에서 안쪽을 가로지른다 -- 원호가 실제 경로보다 완만해
+        # 지기 때문이다. 코너를 못 도는 제일 흔한 이유다.
+        #
+        #     ld_eff = ld / (1 + k * |곡률| * ld)
+        #
+        # 직선(곡률 0)에서는 그대로고, 휠수록 줄어든다. 반지름 0.6 m
+        # 코너면 곡률 1.67 이라 0.85 -> 0.50 이 된다.
+        #
+        # 0 으로 두면 이 보정을 끈다.
+        self.declare_parameter('ld_curve_k', 0.5)
+
+        # 목표점 y 가 한 주기에 움직일 수 있는 한계 (m/s).
+        #
+        # 속도에는 변화율 제한이 있는데(accel_step/brake_step) 조향에는
+        # 없었다. 목표점이 5 cm 만 튀어도 0.5 m 앞에서는 조향이 4도, 10 cm
+        # 면 8도가 한 프레임에 튄다. 인지가 한두 프레임 깜빡이면 그게
+        # 그대로 바퀴로 간다.
+        #
+        # 조향에 직접 걸지 않고 **목표점에** 거는 이유: 조향을 누르면
+        # 진짜 코너에서도 늦어진다. 목표점은 물리적으로 프레임 사이에
+        # 급변할 수 없으므로, 급변한 건 대개 인지 오류다.
+        #
+        # 0 이면 제한하지 않는다.
+        self.declare_parameter('target_rate_mps', 2.0)
+
         self.declare_parameter('steer_sign', 1.0)
 
         # 출발 허가. race/go 가 True 가 될 때까지 안 움직인다.
@@ -111,6 +139,9 @@ class PerceptionV3FollowNode(Node):
         self.ld_min_m = float(p('ld_min_m').value)
         self.ld_max_m = float(p('ld_max_m').value)
         self.ld_k = float(p('ld_k').value)
+        self.ld_curve_k = float(p('ld_curve_k').value)
+        self.target_rate_mps = float(p('target_rate_mps').value)
+        self._target_y = None
         self.steer_sign = float(p('steer_sign').value)
         self.wait_for_green = bool(p('wait_for_green').value)
         self._green_seen = not self.wait_for_green
@@ -294,6 +325,49 @@ class PerceptionV3FollowNode(Node):
         return chosen
 
     @staticmethod
+    def path_curvature(points, upto_m):
+        """원점부터 upto_m 까지 경로가 얼마나 휘는지 (1/m).
+
+        연속한 선분 사이의 방향 전환을 모아 호 길이로 나눈다. 직선이면 0,
+        반지름 R 인 원호면 1/R 이 나온다.
+
+        곡률의 정의(dtheta/ds)를 그대로 이산화한 것이라, 점 간격이
+        고르지 않아도 흔들리지 않는다.
+        """
+        if len(points) < 3:
+            return 0.0
+        turn = 0.0
+        arc = 0.0
+        previous = None
+        last = (0.0, 0.0)
+        for point in points:
+            dx, dy = point[0] - last[0], point[1] - last[1]
+            step = math.hypot(dx, dy)
+            if step < 1e-6:
+                continue
+            heading = math.atan2(dy, dx)
+            if previous is not None:
+                delta = heading - previous
+                # 각도를 [-pi, pi] 로 접는다. 안 그러면 한 바퀴 돌 때 튄다.
+                turn += abs(math.atan2(math.sin(delta), math.cos(delta)))
+            previous = heading
+            arc += step
+            last = point
+            if arc >= upto_m:
+                break
+        return turn / arc if arc > 1e-6 else 0.0
+
+    def limit_target_rate(self, y_lat):
+        """목표점 y 가 한 주기에 움직일 수 있는 양을 제한한다."""
+        if self.target_rate_mps <= 0.0 or self._target_y is None:
+            self._target_y = y_lat
+            return y_lat
+        step = self.target_rate_mps / max(1.0, self.control_hz)
+        delta = y_lat - self._target_y
+        self._target_y += max(-step, min(step, delta))
+        return self._target_y
+
+    @staticmethod
     def path_length(points):
         """차량 원점부터 경로 끝까지의 누적 거리 -- '얼마나 멀리 보이는가'."""
         prev = (0.0, 0.0)
@@ -324,9 +398,14 @@ class PerceptionV3FollowNode(Node):
         if usable:
             self._last_ok_time = now
             visible_m = self.path_length(self._path_points)
+            # 속도로 정하고, 코너면 줄인다.
             ld = min(self.ld_max_m,
                     max(self.ld_min_m, self.ld_k * max(self._speed, self.v_min)))
+            kappa = self.path_curvature(self._path_points, ld)
+            ld = ld / (1.0 + self.ld_curve_k * abs(kappa) * ld)
+            ld = min(self.ld_max_m, max(self.ld_min_m, ld))
             x_fwd, y_lat = self.lookahead_point(self._path_points, ld)
+            y_lat = self.limit_target_rate(y_lat)
 
             # 고깔이 있으면 목표점을 옆으로 민다. 속도는 안 줄인다 --
             # 미리(ld 앞에서) 피하는 것이 이 설계의 전제다.
@@ -347,9 +426,9 @@ class PerceptionV3FollowNode(Node):
             self.pub_dbg.publish(Float32MultiArray(data=[
                 float(x_fwd), float(y_lat), float(y_used),
                 float(self._steer), float(self._offset), 1.0]))
-            self._log('LOS(%.2fm, %+.2fm) ld=%.2f  보임=%.2fm  '
+            self._log('LOS(%.2fm, %+.2fm) ld=%.2f 곡률=%.2f  보임=%.2fm  '
                       'steer=%+.1f도  v=%.2f (한계 %.2f)  회피=%+.2fm %s'
-                      % (x_fwd, y_used, ld, visible_m,
+                      % (x_fwd, y_used, ld, kappa, visible_m,
                          math.degrees(self._steer), self._speed, v_target,
                          self._offset, why or '-'))
             return
@@ -363,6 +442,7 @@ class PerceptionV3FollowNode(Node):
                 throttle_duration_sec=0.5)
             return
 
+        self._target_y = None
         self._publish(0.0, 0.0)
         self.get_logger().warn('경로 없음 - 정지', throttle_duration_sec=1.0)
 

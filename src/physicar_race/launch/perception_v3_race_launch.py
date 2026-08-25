@@ -212,10 +212,25 @@ def generate_launch_description():
         DeclareLaunchArgument('ld_min_m', default_value='0.35'),
         DeclareLaunchArgument('ld_max_m', default_value='0.85'),
         DeclareLaunchArgument('ld_k', default_value='0.90'),
+        # 코너에서 전방주시거리를 곡률로 줄인다. 순수추종은 목표점까지
+        # 원호 하나로 가므로, 멀리 잡으면 코너 안쪽을 가로지른다.
+        #   ld_eff = ld / (1 + k * |곡률| * ld)
+        # 0 이면 끈다.
+        DeclareLaunchArgument('ld_curve_k', default_value='0.5'),
+        # 목표점 y 의 변화율 상한(m/s). 속도에는 변화율 제한이 있었는데
+        # 조향에는 없었다. 목표점이 5cm 튀면 0.5m 앞에서 조향이 4도 튄다.
+        # 0 이면 끈다.
+        DeclareLaunchArgument('target_rate_mps', default_value='2.0'),
         DeclareLaunchArgument('steer_sign', default_value='1.0'),
         DeclareLaunchArgument('v_max', default_value='1.20'),
         DeclareLaunchArgument('v_min', default_value='0.45'),
-        DeclareLaunchArgument('a_lat_max', default_value='3.0'),
+        # 코너 감속. 3.0 이었을 때는 최대조향 20도에서 상한이 1.22 라
+        # v_max 1.20 에 안 걸려서 **한 번도 감속한 적이 없었다.**
+        # 1.5 면 12도부터 걸리고 20도에서 0.86 m/s 로 내려간다.
+        #
+        # 이게 전방주시거리까지 같이 고친다 -- ld = 0.90 * v 라서, 속도가
+        # 안 줄면 코너에서도 멀리 보고 그러면 안쪽을 가로지른다.
+        DeclareLaunchArgument('a_lat_max', default_value='1.5'),
         DeclareLaunchArgument('k_vis', default_value='1.40'),
 
         # --- 초록 고깔 회피 ---
@@ -433,6 +448,8 @@ def generate_launch_description():
             'ld_min_m': _f('ld_min_m'),
             'ld_max_m': _f('ld_max_m'),
             'ld_k': _f('ld_k'),
+            'ld_curve_k': _f('ld_curve_k'),
+            'target_rate_mps': _f('target_rate_mps'),
             'steer_sign': _f('steer_sign'),
             'v_max': _f('v_max'),
             'v_min': _f('v_min'),
