@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import time
+
 import cv2
 import numpy as np
 
@@ -47,6 +49,7 @@ class ColorComponentPipeline:
         self.open_kernel = self._kernel_size(open_kernel)
         self.close_kernel = self._kernel_size(close_kernel)
         self.extractor = extractor
+        self.last_times = {}
 
     @staticmethod
     def _kernel_size(value):
@@ -55,7 +58,19 @@ class ColorComponentPipeline:
             return 0
         return value if value % 2 else value + 1
 
-    def process(self, bev, valid_map, include_white_stages=False):
+    def process(self, bev, valid_map, include_white_stages=False,
+                include_overlay=True):
+        """include_overlay=False 면 진단용 오버레이를 안 그린다.
+
+        draw_overlay 는 bev.copy() 를 뜬 다음, 컴포넌트마다 픽셀을 최대
+        300개씩 파이썬 루프로 하나하나 대입한다. 컴포넌트가 열 개면
+        파이썬 반복 3000회다.
+
+        v2 노드는 이 결과를 쓴다(v2/bev_frontend_node.py:654,709). 그래서
+        기본값은 True 로 둔다. v3 노드는 **한 번도 안 쓴다** -- 매 프레임
+        그려서 버리고 있었다. 실차에서 seg 구간이 99.7 ms 였다.
+        """
+        t0 = time.perf_counter()
         hsv = cv2.cvtColor(bev, cv2.COLOR_BGR2HSV)
         masks = {}
         white_stages = None
@@ -81,8 +96,19 @@ class ColorComponentPipeline:
                 masks[color] = after_close
             else:
                 masks[color] = self._morph(mask)
+        t1 = time.perf_counter()
         frame = self.extractor.extract(masks, valid_map)
-        overlay = self.draw_overlay(bev, frame)
+        t2 = time.perf_counter()
+        overlay = (self.draw_overlay(bev, frame) if include_overlay
+                   else np.empty((0, 0, 3), dtype=np.uint8))
+        # seg 구간이 왜 큰지 이름으로 보이게 한다. 격자를 절반으로 줄여도
+        # seg 가 안 줄어서, 픽셀 수에 비례하지 않는 부분이 있다는 뜻이다.
+        #   hsv      cvtColor + inRange + 모폴로지  (픽셀 수에 비례)
+        #   extract  연결요소 + 컴포넌트별 측지 BFS
+        #   overlay  진단 그림 (v3 는 끈다)
+        self.last_times = {'hsv': t1 - t0, 'extract': t2 - t1,
+                           'overlay': time.perf_counter() - t2,
+                           'components': len(frame.observations)}
         return SegmentationOutput(
             masks[WHITE], masks[ORANGE],
             cv2.bitwise_or(masks[WHITE], masks[ORANGE]), frame, overlay,

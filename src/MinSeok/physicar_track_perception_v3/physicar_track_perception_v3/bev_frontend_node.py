@@ -1510,10 +1510,17 @@ class V3Node(Node):
         if self.debug_wanted(self.bev_pub):
             self.bev_pub.publish(self.bridge.cv2_to_imgmsg(out.bev,'bgr8'))
             self.stats['bev_published'] += 1
-        seg=self.seg.process(out.bev,out.validity_mask>0)
+        # include_overlay=False: draw_overlay 결과를 v3 는 안 쓴다.
+        # 그리고 그건 컴포넌트마다 파이썬 픽셀 루프를 300회 돈다.
+        seg=self.seg.process(out.bev,out.validity_mask>0,
+                             include_overlay=False)
         t_d=time.perf_counter()
-        self.stage.update(map=t_b-t_a, remap=t_c-t_b, seg=t_d-t_c,
-                          head=t_d-t_start)
+        # 한 프레임 치를 통째로 모았다가 끝에서 한 번에 갈아끼운다.
+        # 앞서는 total 만 프레임 끝에서 넣는 바람에, 로그가 이전 프레임의
+        # total 에서 이번 프레임의 head 를 빼서 tail 이 엉뚱하게 나왔다.
+        pending_stage={'map':t_b-t_a,'remap':t_c-t_b,'seg':t_d-t_c,
+                       'head':t_d-t_start}
+        pending_stage.update(self.seg.last_times)
         items=[]
         for obs in seg.component_frame.observations:
             if obs.candidate is not None:
@@ -1802,11 +1809,13 @@ class V3Node(Node):
             # 이름으로 보이게 하는 게 목적이다.
             st = self.stage
             self.get_logger().info(
-                'V3 timing total=%.1fms | map=%.1f remap=%.1f seg=%.1f '
-                'head=%.1f tail=%.1f'
+                'V3 timing total=%.1fms | map=%.1f remap=%.1f '
+                'seg=%.1f(hsv=%.1f extract=%.1f overlay=%.1f comp=%d) '
+                'tail=%.1f'
                 % (st.get('total',0)*1e3, st.get('map',0)*1e3,
                    st.get('remap',0)*1e3, st.get('seg',0)*1e3,
-                   st.get('head',0)*1e3,
+                   st.get('hsv',0)*1e3, st.get('extract',0)*1e3,
+                   st.get('overlay',0)*1e3, st.get('components',0),
                    (st.get('total',0)-st.get('head',0))*1e3))
             diag = self.last_lidar_diagnostic or {}
             self.get_logger().info('V3 LiDAR image=%.9f scan=%s delta=%s frame=%s beams=%d valid=%d transformed=%d in_bounds=%d dropped_tf=%d tf_success=%s tf_error=%s overlays=%d no_pair=%d tf_wait=%d tf_fail=%d pending=%d replaced=%d' % (diag.get('image_stamp', 0.0), 'none' if diag.get('scan_stamp') is None else '%.9f' % diag['scan_stamp'], 'none' if diag.get('delta') is None else '%.6f' % diag['delta'], diag.get('scan_frame'), diag.get('total_beams', 0), diag.get('valid_ranges', 0), diag.get('transformed_points', 0), diag.get('in_bounds_points', 0), diag.get('dropped_tf_points', 0), diag.get('tf_success', False), diag.get('tf_error'), self.stats['lidar_overlay_published'], self.stats['lidar_no_pair'], self.stats['lidar_tf_wait'], self.stats['lidar_tf_failure'], len(self.lidar_pending), self.stats['lidar_pending_replaced']))
@@ -1859,7 +1868,8 @@ class V3Node(Node):
         if self.debug_wanted(self.path_pub):
             self.path_pub.publish(self.bridge.cv2_to_imgmsg(path,'bgr8'))
             self.stats['path_overlay_published'] += 1
-        self.stage['total']=time.perf_counter()-t_start
+        pending_stage['total']=time.perf_counter()-t_start
+        self.stage=pending_stage
 
     def draw_roles(self, bev, items):
         """V3-only overlay: no inherited endpoint markers or stale colors."""
