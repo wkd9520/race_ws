@@ -104,6 +104,26 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('camera_topic', default_value='/camera/image_raw'),
+
+        # --- TF 대기 큐 ---
+        # 인지는 이미지의 **정확한 시각**에 해당하는 TF 를 요구한다. 못 찾으면
+        # 그 프레임을 대기 큐에 넣고 timer_period 마다 재시도하다가,
+        # max_pending_age 까지 붙잡는다.
+        #
+        # 실측: 지연 평균 0.161 s, 최소 0.064, **최대 0.330**.
+        #   0.064 = 드라이버 0.030 + 처리 0.043 (정상 경로)
+        #   0.330 = 0.25(대기) + 0.08          (대기 큐를 탄 경로)
+        #
+        # 250 ms 늦게 온 프레임은 **없는 것보다 나쁘다.** 1.2 m/s 에서
+        # 30 cm 전 세상이다. follow 노드는 경로가 끊기면 1초까지 마지막
+        # 조향을 유지하므로(grace_s), 잠깐 버티는 편이 묵은 값으로 꺾는
+        # 것보다 안전하다.
+        #
+        # 다만 대부분의 프레임이 대기 큐를 탄다면 줄이는 순간 경로가
+        # 굶는다. 런치 터미널의 'V3 stats images=.. immediate=.. pending=..'
+        # 를 먼저 보고 정할 것. immediate 가 대부분이면 0.06 으로 내린다.
+        DeclareLaunchArgument('tf_max_pending_age', default_value='0.25'),
+        DeclareLaunchArgument('tf_retry_period', default_value='0.02'),
         DeclareLaunchArgument('joint_states_topic', default_value='/joint_states'),
         DeclareLaunchArgument('scan_topic', default_value='/scan'),
 
@@ -343,6 +363,8 @@ def generate_launch_description():
             'bev.y_max': _f('bev_y_max'),
             'bev.resolution': _f('bev_resolution'),
             'projection.pitch_offset_deg': _f('pitch_offset_deg'),
+            'tf_wait.max_pending_age': _f('tf_max_pending_age'),
+            'tf_wait.timer_period': _f('tf_retry_period'),
             'sim_geometry.camera_height_correction_z':
                 _f('camera_height_correction_z'),
             'camera.K': ParameterValue(LaunchConfiguration('camera_k'),
