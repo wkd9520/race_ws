@@ -211,43 +211,25 @@ def generate_launch_description():
         # y ±0.70 인 이유: track_half_m 0.37 + max_offset_m 0.30 = 0.67.
         # 고깔을 피해 붙는 순간 반대편 흰선(넘으면 실격)이 격자 밖으로
         # 나가면 안 된다.
-        # x_max 를 0.87 로 자른 이유. 튜닝이 아니라 계산이다.
+        # --- BEV 격자 ---
+        # 08-24 월 22:57(7f35d12) 값으로 되돌렸다. 그때가 트랙에서 제일 잘
+        # 달렸고, 그 뒤 내가 줄인 것이 주행을 망가뜨렸다.
         #
-        # 카메라가 0.148 m 높이에 있으면, 먼 지면일수록 한 이미지 행이
-        # 덮는 지면이 급격히 넓어진다 (거리^2 / (fy * h)):
+        # 줄인 근거는 이랬다: 카메라가 0.148 m 로 낮아서 한 이미지 행이
+        # 덮는 지면이 거리²/(fy·h) 로 커지고, 0.88 m 를 넘으면 격자 한 칸을
+        # 채울 정보가 없다. 1.1 m 에서 2.7 cm, 1.2 m 에서 3.2 cm.
         #
-        #     거리    한 행이 덮는 지면
-        #     0.5 m   0.7 cm    격자 1cm 보다 촘촘. 선명하다
-        #     0.9 m   1.9 cm    경계
-        #     1.1 m   2.7 cm    격자 세 칸을 한 행으로 채운다
-        #     1.2 m   3.2 cm    뭉갠다
+        # 그 계산 자체는 맞다. **틀린 것은 결론이었다.** 그건 "그 구간이
+        # 흐리다"는 뜻이지 "제어가 그걸 못 쓴다"는 뜻이 아니었다. 순수추종은
+        # 목표점의 대략적인 방향만 있으면 되고, 흐릿한 먼 점이라도 도달거리를
+        # 주는 편이 아예 없는 것보다 낫다. x_max 를 0.87 로 자르니
+        # ld_max 도 같이 굶어서 조향이 통째로 죽었다.
         #
-        # 1.2 로 두면 위쪽 0.3 m 를 이미지 서너 행으로 늘려 그린다.
-        # 흐린 게 아니라 **거기엔 정보가 없다.** 그 구간은 보기만 나쁜 게
-        # 아니라 해롭다 -- 늘어난 얼룩이 가짜 연결요소로 잡혀서 comp 수를
-        # 늘리고, extract 시간을 먹고, 경로에 헛점을 넣는다.
-        #
-        # 한계 거리 = sqrt(0.02 * fy * h) = sqrt(0.02*260.875*0.148) = 0.88 m
-        #
-        # **틸트로는 못 고친다.** -30/-20/-12.5 도에서 한계가 0.93/0.88/0.87
-        # 로 거의 같다. 틸트는 지면이 화면 어디에 찍히는지만 바꾼다.
-        # 유일한 지렛대는 카메라 높이다:
-        #
-        #     0.148 m -> 0.88 m      0.25 m -> 1.14 m
-        #     0.20  m -> 1.02 m      0.30 m -> 1.25 m
-        #
-        # 카메라를 물리적으로 올리면 그때 x_max 를 같이 올린다.
-        #
-        # x_min 0.15: 화면 맨 아래가 0.065 m 까지 본다. 근거리는 해상도가
-        # 제일 좋은 구간이라 넉넉히 받는다.
-        #
-        # ld_max_m 도 0.90 -> 0.85 로 같이 내렸다. 전방주시점이 경로 끝보다
-        # 멀면 늘 마지막 점을 쓰게 되고, 그러면 속도가 붙어도 전방주시거리가
-        # 안 늘어난다 -- 조향이 속도를 못 따라간다.
-        DeclareLaunchArgument('bev_x_min', default_value='0.15'),
-        DeclareLaunchArgument('bev_x_max', default_value='0.87'),
-        DeclareLaunchArgument('bev_y_min', default_value='-0.70'),
-        DeclareLaunchArgument('bev_y_max', default_value='0.70'),
+        # 화질 계산으로 제어 파라미터를 정하지 말 것. 트랙이 답이다.
+        DeclareLaunchArgument('bev_x_min', default_value='0.10'),
+        DeclareLaunchArgument('bev_x_max', default_value='2.00'),
+        DeclareLaunchArgument('bev_y_min', default_value='-0.75'),
+        DeclareLaunchArgument('bev_y_max', default_value='0.75'),
         DeclareLaunchArgument('bev_resolution', default_value='0.01'),
 
         # --- 투영 보정 ---
@@ -293,28 +275,31 @@ def generate_launch_description():
         # --- 우리 컨트롤러 ---
         DeclareLaunchArgument('control_hz', default_value='30.0'),
         DeclareLaunchArgument('ld_min_m', default_value='0.35'),
-        DeclareLaunchArgument('ld_max_m', default_value='0.85'),
+        DeclareLaunchArgument('ld_max_m', default_value='1.30'),
         DeclareLaunchArgument('ld_k', default_value='0.90'),
-        # 코너에서 전방주시거리를 곡률로 줄인다. 순수추종은 목표점까지
-        # 원호 하나로 가므로, 멀리 잡으면 코너 안쪽을 가로지른다.
+        # 코너에서 전방주시거리를 곡률로 줄인다.
         #   ld_eff = ld / (1 + k * |곡률| * ld)
-        # 0 이면 끈다.
-        DeclareLaunchArgument('ld_curve_k', default_value='0.5'),
-        # 목표점 y 의 변화율 상한(m/s). 속도에는 변화율 제한이 있었는데
-        # 조향에는 없었다. 목표점이 5cm 튀면 0.5m 앞에서 조향이 4도 튄다.
-        # 0 이면 끈다.
-        DeclareLaunchArgument('target_rate_mps', default_value='2.0'),
+        #
+        # **기본은 꺼짐(0).** 시뮬레이션에서는 코너 바깥 오차를
+        # 0.143 -> 0.102 m 로 줄였지만 실차에서 검증한 적이 없고, 지금은
+        # 잘 달리던 상태로 먼저 돌아가는 것이 우선이다. 트랙이 안정되면
+        # 0.5 부터 한 번에 하나씩 켜본다.
+        DeclareLaunchArgument('ld_curve_k', default_value='0.0'),
+        # 목표점 y 의 변화율 상한(m/s). 조향에는 변화율 제한이 없어서,
+        # 목표점이 5cm 튀면 0.5m 앞에서 조향이 4도 튄다.
+        # **기본은 꺼짐(0)** -- 위와 같은 이유로 실차 검증 전이다.
+        DeclareLaunchArgument('target_rate_mps', default_value='0.0'),
         DeclareLaunchArgument('steer_sign', default_value='1.0'),
         DeclareLaunchArgument('v_max', default_value='1.20'),
         DeclareLaunchArgument('v_min', default_value='0.45'),
-        # 코너 감속. 3.0 이었을 때는 최대조향 20도에서 상한이 1.22 라
-        # v_max 1.20 에 안 걸려서 **한 번도 감속한 적이 없었다.**
-        # 1.5 면 12도부터 걸리고 20도에서 0.86 m/s 로 내려간다.
+        # 3.0 이면 최대조향 20도에서도 상한이 1.22 라 v_max 1.20 에 안
+        # 걸린다 -- 즉 코너 감속이 사실상 없다. 1.5 로 내리면 12도부터
+        # 걸리고 20도에서 0.86 m/s 가 된다.
         #
-        # 이게 전방주시거리까지 같이 고친다 -- ld = 0.90 * v 라서, 속도가
-        # 안 줄면 코너에서도 멀리 보고 그러면 안쪽을 가로지른다.
-        DeclareLaunchArgument('a_lat_max', default_value='1.5'),
-        DeclareLaunchArgument('k_vis', default_value='1.40'),
+        # 그런데 **3.0 인 채로 트랙에서 제일 잘 달렸다.** 감속을 켜는 것이
+        # 이론상 맞더라도 실주행으로 확인하기 전까지는 그때 값을 쓴다.
+        DeclareLaunchArgument('a_lat_max', default_value='3.0'),
+        DeclareLaunchArgument('k_vis', default_value='1.10'),
 
         # --- 초록 고깔 회피 ---
         DeclareLaunchArgument('avoid_enabled', default_value='true'),

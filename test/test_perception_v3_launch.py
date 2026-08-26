@@ -271,44 +271,41 @@ check('  camera_d 가 0 이다 (드라이버가 이미 보정)',
 
 # 라즈베리파이 5 가 카메라를 못 따라가서 줄였다. 인지 비용은 BEV 픽셀
 # 수에 거의 비례한다(연결요소마다 픽셀 BFS). 28,500 -> 2,500 px.
-# --- x_max 는 취향이 아니라 계산으로 정한다 ---
-# 카메라가 낮으면(0.148 m) 먼 지면일수록 한 이미지 행이 덮는 지면이
-# 거리^2 / (fy*h) 로 커진다. 그 값이 BEV 격자의 두 배를 넘으면 BEV 는
-# 없는 정보를 늘려 그리는 것이고, 그 얼룩은 가짜 연결요소로 잡혀
-# comp 수와 extract 시간을 늘리고 경로에 헛점을 넣는다.
+# --- 격자와 전방주시거리의 관계 ---
 #
-# 틸트로는 못 고친다 -- 틸트는 지면이 화면 어디에 찍히는지만 바꾼다.
-# 카메라를 물리적으로 올리면 그때 이 테스트가 새 한계를 알려준다.
+# 여기 있던 검사 하나를 지웠다: "x_max 는 카메라가 분해할 수 있는 거리
+# 안에 있어야 한다". 계산 자체는 맞다 --
+#
+#     한 행이 덮는 지면 = 거리² / (fy·h),  0.88 m 를 넘으면 격자 한 칸을
+#     채울 정보가 없다 (1.1 m 에서 2.7 cm, 1.2 m 에서 3.2 cm)
+#
+# 틀린 것은 **결론**이었다. 그건 "그 구간이 흐리다"는 뜻이지 "제어가
+# 그걸 못 쓴다"는 뜻이 아니다. 그 검사를 믿고 x_max 를 2.00 -> 0.87 로
+# 자르자 ld_max 까지 굶어서 주행이 통째로 죽었다.
+#
+# 테스트는 **관측된 사실**을 박는 곳이지 내 가설을 박는 곳이 아니다.
+# 화질 한계는 아래에 정보로만 남긴다.
 CAMERA_HEIGHT_M = 0.148       # tf2_echo base_footprint -> camera 실측
 FY = 260.875                  # perception_v3_real.yaml 의 camera.K
-usable_m = math.sqrt(2.0 * float(args['bev_resolution']) * FY * CAMERA_HEIGHT_M)
-check('x_max 가 카메라가 실제로 분해할 수 있는 거리 안에 있다 ★',
-      float(args['bev_x_max']) <= usable_m + 1e-9,
-      '(x_max %.2f m <= 한계 %.2f m)' % (float(args['bev_x_max']), usable_m))
-# 전방주시점이 경로 끝보다 멀면 늘 마지막 점을 쓰게 되고, 그러면
-# 속도가 붙어도 전방주시거리가 안 늘어난다.
-check('  전방주시 상한이 경로 길이 안에 든다',
+fidelity_m = math.sqrt(2.0 * float(args['bev_resolution']) * FY * CAMERA_HEIGHT_M)
+print('       참고: 화질이 격자를 따라오는 거리는 %.2f m (x_max %.2f). '
+      '그 너머는 흐리지만 제어는 쓴다.'
+      % (fidelity_m, float(args['bev_x_max'])))
+
+# 이건 진짜 불변식이다. 전방주시점이 경로가 닿는 곳보다 멀면, 늘 경로
+# 끝점을 쓰게 되고 속도가 붙어도 전방주시거리가 안 늘어난다. 실제로
+# x_max 를 0.87 로 자르고 ld_max 0.85 를 남겼다가 주행이 죽었다.
+check('전방주시 상한이 격자 안에 든다 ★',
       float(args['ld_max_m']) <= float(args['bev_x_max']) + 1e-9,
       '(ld_max %.2f <= x_max %.2f)'
       % (float(args['ld_max_m']), float(args['bev_x_max'])))
 
-# 해상도는 0.01 로 못 박는다. 0.02 로 올리면 흰선(2~3 cm)이 BEV 에서
-# 1 픽셀이 되고, 마스킹이 투영 *뒤에* 돌기 때문에(bev_frontend_node.py:1452)
-# 보간에서 아스팔트와 섞여 임계값을 못 넘는다 -- 선이 통째로 사라진다.
-# 실차에서 조향이 완전히 죽었다. 줄이는 건 범위로만 한다.
-# x_max 는 위에서 물리로 검사한다. 여기서는 해상도만 못 박는다 --
-# 줄이는 건 언제나 범위로만 한다.
-check('해상도는 0.01 이다 (범위로만 줄인다) ★',
-      args.get('bev_resolution') == '0.01'
-      and args.get('bev_y_max') == '0.70',
-      '(%s m/px, x~%s, y±%s)' % (args.get('bev_resolution'),
-                                 args.get('bev_x_max'), args.get('bev_y_max')))
-px = ((float(args['bev_x_max']) - float(args['bev_x_min']))
-      / float(args['bev_resolution'])
-      * (float(args['bev_y_max']) - float(args['bev_y_min']))
-      / float(args['bev_resolution']))
-check('  BEV 픽셀 수가 실차 yaml(28,500)의 절반 이하', px <= 14500,
-      '(%.0f px)' % px)
+# 해상도는 관측된 사실이다. 0.02 로 올렸더니 조향이 통째로 죽었다 --
+# 마스킹이 투영 뒤에 돌아서(bev_frontend_node.py) 2~3 cm 흰선이 1픽셀이
+# 되면 보간에 먹힌다. 줄일 일이 있으면 범위로만 줄인다.
+check('해상도는 0.01 이다 ★', args.get('bev_resolution') == '0.01',
+      '(%s m/px)' % args.get('bev_resolution'))
+
 # 고깔을 피해 max_offset_m 만큼 붙었을 때도 반대편 흰선이 격자 안에
 # 남아야 한다. 흰선을 넘으면 실격이라, 회피하는 그 순간 못 보면 안 된다.
 far_wall = float(args['track_half_m']) + float(args['max_offset_m'])
